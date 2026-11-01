@@ -395,6 +395,12 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_guiGeometryClear{true};
     bool m_guiAsyncTextureUpload{false};
     bool m_guiVideoLayoutTransparent{false};
+    //! GUI height on taller outputs, video stays at the output resolution (DirectX, 0: off)
+#if defined(TARGET_WINDOWS_STORE)
+    int m_guiReducedHeight{1080};
+#else
+    int m_guiReducedHeight{0};
+#endif
 
     unsigned int m_addonPackageFolderSize;
 

@@ -341,6 +341,7 @@ void CGUIShaderDX::DrawQuad(Vertex& v1, Vertex& v2, Vertex& v3, Vertex& v4)
     pContext->Unmap(m_pVertexBuffer.Get(), 0);
     // Draw primitives
     pContext->Draw(4, 0);
+    ++CRenderSystemBase::m_GUIElementCount;
   }
 }
 
@@ -368,6 +369,7 @@ void CGUIShaderDX::DrawGUIQuads(ID3D11Buffer* vertexBuffer,
   pContext->IASetIndexBuffer(m_pQuadIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
   pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   pContext->DrawIndexed(quadCount * 6, 0, 0);
+  ++CRenderSystemBase::m_GUIElementCount;
 
   // restore what the other GUI draw paths expect
   m_shaders[m_currentShader].m_vs->BindShader();
@@ -399,6 +401,7 @@ void CGUIShaderDX::DrawIndexed(unsigned int indexCount, unsigned int startIndex,
 
   ApplyChanges();
   DX::DeviceResources::Get()->GetD3DContext()->DrawIndexed(indexCount, startIndex, startVertex);
+  ++CRenderSystemBase::m_GUIElementCount;
 }
 
 void CGUIShaderDX::Draw(unsigned int vertexCount, unsigned int startVertex)
@@ -408,6 +411,7 @@ void CGUIShaderDX::Draw(unsigned int vertexCount, unsigned int startVertex)
 
   ApplyChanges();
   DX::DeviceResources::Get()->GetD3DContext()->Draw(vertexCount, startVertex);
+  ++CRenderSystemBase::m_GUIElementCount;
 }
 
 void CGUIShaderDX::SetShaderViews(unsigned int numViews, ID3D11ShaderResourceView** views)

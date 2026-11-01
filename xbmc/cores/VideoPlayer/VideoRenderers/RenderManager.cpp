@@ -544,8 +544,18 @@ void CRenderManager::ServiceVideoCaptures()
   // visible region, so native-size targets must be sized from it too
   const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   CRect visible{dst};
-  visible.Intersect(
-      CRect(0.0f, 0.0f, static_cast<float>(gfx.GetWidth()), static_cast<float>(gfx.GetHeight())));
+  CRect output{0.0f, 0.0f, static_cast<float>(gfx.GetWidth()), static_cast<float>(gfx.GetHeight())};
+  // dst is in GUI pixels, under a reduced-resolution GUI the video is at the output resolution
+  if (gfx.IsGuiReduced())
+  {
+    const RESOLUTION_INFO info = gfx.GetResInfo();
+    const float scaleX = static_cast<float>(info.iScreenWidth) / info.iWidth;
+    const float scaleY = static_cast<float>(info.iScreenHeight) / info.iHeight;
+    visible = CRect(dst.x1 * scaleX, dst.y1 * scaleY, dst.x2 * scaleX, dst.y2 * scaleY);
+    output = CRect(0.0f, 0.0f, static_cast<float>(info.iScreenWidth),
+                   static_cast<float>(info.iScreenHeight));
+  }
+  visible.Intersect(output);
 
   if (!m_captureBlit)
     m_captureBlit = std::make_unique<CCaptureBlit>();
@@ -686,6 +696,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       m_renderedDebugOverlay = true;
     }
   }
+
+  // a reduced-resolution GUI draws the video in the later RenderEx pass: only that pass advances
+  // the present step (else PRESENT_METHOD_BOB would skip the first field)
+  if (gui && !presented && CServiceBroker::GetWinSystem()->GetGfxContext().IsGuiReduced())
+    return;
 
   const SPresent& m = m_Queue[m_presentsource];
 

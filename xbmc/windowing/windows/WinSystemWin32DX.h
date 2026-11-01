@@ -86,6 +86,12 @@ public:
   // Get debug info from swapchain
   DEBUG_INFO_RENDER GetDebugInfo() override;
 
+  // reduced-resolution GUI layer, see CRenderSystemDX::BeginGuiTarget
+  bool BeginGuiComposite(bool guiWillRender) override { return BeginGuiTarget(guiWillRender); }
+  void EndGuiComposite() override { EndGuiTarget(); }
+  void CompositeGui() override { CompositeGuiTarget(); }
+  bool IsVideoUnderGui() const override { return IsGuiTargetActive(); }
+
   bool SupportsVideoSuperResolution() override;
 
 protected:

@@ -42,6 +42,9 @@ public:
   bool Supports(ESCALINGMETHOD method) const override;
 
   bool WantsDoublePass() override;
+  // a reduced-resolution GUI: video is drawn under it at the output resolution (RenderEx pass)
+  bool IsGuiLayer() override;
+  bool VideoBypassesFramebuffer() override { return false; }
   bool ConfigChanged(const VideoPicture& picture) override;
 
   // Debug info video

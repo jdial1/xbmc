@@ -66,6 +66,21 @@ public:
   void RequestDecodingTime();
   void ReleaseDecodingTime();
   void SetAlphaBlendEnable(bool enable);
+  void ShowSplash(const std::string& message) override;
+
+  // reduced-resolution GUI layer (CGraphicContext::IsGuiReduced): the GUI renders into m_guiTarget,
+  // the video into the back buffer at the output resolution, then the GUI is composited over it
+  bool BeginGuiTarget(bool guiWillRender);
+  void EndGuiTarget();
+  void CompositeGuiTarget();
+  //! where GUI draws land: the GUI target while it is bound, else the back buffer
+  CD3DTexture& GetGuiRenderTarget() { return m_guiTargetBound ? m_guiTarget : GetBackBuffer(); }
+  bool IsGuiTargetActive() const { return m_guiTargetBound; }
+  //! the video was drawn under the GUI this frame: the composite blends
+  void SetVideoDrawn() { m_videoDrawn = m_videoDrawn || m_compositeActive; }
+  //! scissors of the video pass (the gfx scissors are in GUI pixels while the GUI is reduced)
+  CRect GetVideoScissors();
+  void RestoreVideoScissors();
 
   // empty overrides
   bool IsExtSupported(const char* extension) const override { return false; }
@@ -80,6 +95,10 @@ protected:
   void CheckInterlacedStereoView(void);
   void CheckDeviceCaps();
   ID3D11DepthStencilState* GetDepthStencilState();
+  bool UpdateGuiTarget();
+  CRect GetTargetRect();
+  void SetOutputRenderState();
+  void ClearTargetDepthStencil() const;
 
   CCriticalSection m_resourceSection;
   CCriticalSection m_decoderSection;
@@ -101,6 +120,18 @@ protected:
   Microsoft::WRL::ComPtr<ID3D11RasterizerState> m_RSScissorEnable;
   // stereo interlaced/checkerboard intermediate target
   CD3DTexture m_rightEyeTex;
+  // reduced-resolution GUI layer
+  CD3DTexture m_guiTarget;
+  Microsoft::WRL::ComPtr<ID3D11DepthStencilView> m_guiDSV; ///< only for front-to-back rendering
+  Microsoft::WRL::ComPtr<ID3D11BlendState> m_BlendPremulState;
+  bool m_guiTargetBound{false}; ///< GUI draws go to m_guiTarget (BeginGuiTarget..EndGuiTarget)
+  bool m_guiWillRender{false}; ///< the GUI walk renders into m_guiTarget this frame
+  bool m_compositeActive{false}; ///< video pass of a reduced GUI (EndGuiTarget..CompositeGuiTarget)
+  bool m_guiClean{true}; ///< m_guiTarget holds nothing to composite
+  bool m_guiFullClear{false}; ///< m_guiTarget was cleared in full this frame
+  bool m_guiTargetFresh{false}; ///< m_guiTarget was just created, its content is undefined
+  bool m_videoDrawn{false}; ///< video was drawn under the GUI this frame
+  bool m_splashTarget{false}; ///< ShowSplash renders through m_guiTarget
 
   XbmcThreads::EndTime<> m_decodingTimer;
   XbmcThreads::ConditionVariable m_decodingEvent;

@@ -271,7 +271,8 @@ void CRPWinRenderer::RenderInternal(uint8_t alpha)
 {
   CRenderSystemDX* renderingDx = static_cast<CRenderSystemDX*>(m_context.Rendering());
 
-  Render(renderingDx->GetBackBuffer(), alpha);
+  // the GUI target while a reduced-resolution GUI renders
+  Render(renderingDx->GetGuiRenderTarget(), alpha);
 }
 
 bool CRPWinRenderer::Supports(RENDERFEATURE feature) const

@@ -183,7 +183,7 @@ void CGUIWindowFullScreen::ClearBackground()
 {
   const auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();
-  if (appPlayer->IsRenderingVideoLayer())
+  if (appPlayer->IsRenderingVideoLayer() || CServiceBroker::GetWinSystem()->IsVideoUnderGui())
     CServiceBroker::GetWinSystem()->GetGfxContext().Clear(0);
   else if (!CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiGeometryClear ||
            !appPlayer->IsRenderingVideo())

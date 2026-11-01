@@ -66,7 +66,9 @@ void CGUIVideoControl::Render()
 
     KODI::UTILS::COLOR::Color alpha =
         CServiceBroker::GetWinSystem()->GetGfxContext().MergeAlpha(0xFF000000) >> 24;
-    if (appPlayer->IsRenderingVideoLayer())
+    // video under the GUI (a video layer or a reduced-resolution GUI) needs a transparent hole
+    const bool videoLayer = appPlayer->IsRenderingVideoLayer();
+    if (videoLayer || CServiceBroker::GetWinSystem()->IsVideoUnderGui())
     {
       CRect old = CServiceBroker::GetWinSystem()->GetGfxContext().GetScissors();
       CRect region = GetRenderRegion();
@@ -82,7 +84,8 @@ void CGUIVideoControl::Render()
         CServiceBroker::GetWinSystem()->GetGfxContext().Clear(0);
       CServiceBroker::GetWinSystem()->GetGfxContext().SetScissors(old);
     }
-    else
+    // under a reduced-resolution GUI the video is drawn in RenderEx, this renders its subtitles
+    if (!videoLayer)
       appPlayer->Render(false, alpha);
 
     CServiceBroker::GetWinSystem()->GetGfxContext().RemoveTransform();

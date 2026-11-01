@@ -27,6 +27,7 @@
 #include "utils/log.h"
 
 #include <cassert>
+#include <cmath>
 #include <mutex>
 
 using KODI::UTILS::COLOR::Color;
@@ -461,8 +462,11 @@ void CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
     // make sure all stereo stuff are correctly setup
     SetStereoView(RenderStereoView::OFF);
 
-    // update anyone that relies on sizing information
-    CServiceBroker::GetInputManager().SetMouseResolution(info_org.iWidth, info_org.iHeight, 1, 1);
+    // update anyone that relies on sizing information (pointers move in GUI pixels)
+    const bool guiReduced = IsGuiReduced();
+    CServiceBroker::GetInputManager().SetMouseResolution(
+        guiReduced ? m_iScreenWidth : info_org.iWidth,
+        guiReduced ? m_iScreenHeight : info_org.iHeight, 1, 1);
 
     CGUIComponent *gui = CServiceBroker::GetGUI();
     if (gui)
@@ -521,7 +525,10 @@ void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
 
   // update anyone that relies on sizing information
   RESOLUTION_INFO info_org  = CDisplaySettings::GetInstance().GetResolutionInfo(res);
-  CServiceBroker::GetInputManager().SetMouseResolution(info_org.iWidth, info_org.iHeight, 1, 1);
+  const bool guiReduced = IsGuiReduced();
+  CServiceBroker::GetInputManager().SetMouseResolution(
+      guiReduced ? m_iScreenWidth : info_org.iWidth, guiReduced ? m_iScreenHeight : info_org.iHeight,
+      1, 1);
   CServiceBroker::GetGUI()->GetWindowManager().SendMessage(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_WINDOW_RESIZE);
 }
 
@@ -579,7 +586,11 @@ void CGraphicContext::ResetScreenParameters(RESOLUTION res)
   info.fPixelRatio = 1.0f;
   info.iScreenWidth = info.iWidth;
   info.iScreenHeight = info.iHeight;
-  ResetOverscan(res, info.Overscan);
+  // ResetOverscan(res, ...) reads GetResInfo(res), which is in GUI pixels for a reduced GUI
+  if (GetGuiReduction(res, info.iScreenHeight) < 1.0f)
+    ResetOverscan(info);
+  else
+    ResetOverscan(res, info.Overscan);
 }
 
 void CGraphicContext::Clear()
@@ -633,6 +644,23 @@ const RESOLUTION_INFO CGraphicContext::GetResInfo(RESOLUTION res) const
     info.Overscan.right   = (info.Overscan.right - info.iBlanking) / 2;
   }
 
+  // a reduced-resolution GUI (see IsGuiReduced): the GUI is laid out in the smaller target, with
+  // the mode's aspect; iScreenWidth/iScreenHeight stay the mode
+  if (const float scale = GetGuiReduction(res, info.iScreenHeight); scale < 1.0f)
+  {
+    info.iWidth = std::lround(info.iScreenWidth * scale);
+    info.iHeight = std::lround(info.iScreenHeight * scale);
+    info.Overscan.left = std::lround(info.Overscan.left * scale);
+    info.Overscan.top = std::lround(info.Overscan.top * scale);
+    info.Overscan.right = std::lround(info.Overscan.right * scale);
+    info.Overscan.bottom = std::lround(info.Overscan.bottom * scale);
+    info.iSubtitles = std::lround(info.iSubtitles * scale);
+    info.guiInsets.left *= scale;
+    info.guiInsets.top *= scale;
+    info.guiInsets.right *= scale;
+    info.guiInsets.bottom *= scale;
+  }
+
   if (res == m_Resolution && m_fFPSOverride != 0)
   {
     info.fRefreshRate = m_fFPSOverride;
@@ -648,6 +676,20 @@ void CGraphicContext::SetResInfo(RESOLUTION res, const RESOLUTION_INFO& info)
   curr.iSubtitles = info.iSubtitles;
   curr.fPixelRatio = info.fPixelRatio;
   curr.guiInsets = info.guiInsets;
+
+  // GetResInfo() hands these out in GUI pixels for a reduced GUI: store them physical
+  if (const float scale = GetGuiReduction(res, curr.iScreenHeight); scale < 1.0f)
+  {
+    curr.Overscan.left = std::lround(info.Overscan.left / scale);
+    curr.Overscan.top = std::lround(info.Overscan.top / scale);
+    curr.Overscan.right = std::lround(info.Overscan.right / scale);
+    curr.Overscan.bottom = std::lround(info.Overscan.bottom / scale);
+    curr.iSubtitles = std::lround(info.iSubtitles / scale);
+    curr.guiInsets.left = info.guiInsets.left / scale;
+    curr.guiInsets.top = info.guiInsets.top / scale;
+    curr.guiInsets.right = info.guiInsets.right / scale;
+    curr.guiInsets.bottom = info.guiInsets.bottom / scale;
+  }
 
   if(info.dwFlags & D3DPRESENTFLAG_MODE3DSBS)
   {
@@ -668,6 +710,59 @@ void CGraphicContext::SetResInfo(RESOLUTION res, const RESOLUTION_INFO& info)
 const RESOLUTION_INFO CGraphicContext::GetResInfo() const
 {
   return GetResInfo(m_Resolution);
+}
+
+float CGraphicContext::GetGuiReduction([[maybe_unused]] RESOLUTION res,
+                                       [[maybe_unused]] int screenHeight) const
+{
+#if defined(HAS_DX)
+  // only full screen modes (the window is sized by the user) and never in a stereo mode
+  if (res < RES_DESKTOP || m_stereoMode != RenderStereoMode::OFF)
+    return 1.0f;
+
+  // read during early startup too, before the settings exist
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  if (!settingsComponent || !settingsComponent->GetAdvancedSettings())
+    return 1.0f;
+
+  const int height = settingsComponent->GetAdvancedSettings()->m_guiReducedHeight;
+  if (height <= 0 || screenHeight <= height)
+    return 1.0f;
+
+  return static_cast<float>(height) / static_cast<float>(screenHeight);
+#else
+  return 1.0f;
+#endif
+}
+
+bool CGraphicContext::IsGuiReduced() const
+{
+  if (m_Resolution < RES_DESKTOP)
+    return false;
+
+  return GetGuiReduction(m_Resolution,
+                         CDisplaySettings::GetInstance().GetResolutionInfo(m_Resolution).iScreenHeight) <
+         1.0f;
+}
+
+CPoint CGraphicContext::ScreenToGui(float x, float y) const
+{
+  if (!IsGuiReduced())
+    return CPoint(x, y);
+
+  const RESOLUTION_INFO& info = CDisplaySettings::GetInstance().GetResolutionInfo(m_Resolution);
+  return CPoint(x * m_iScreenWidth / info.iScreenWidth, y * m_iScreenHeight / info.iScreenHeight);
+}
+
+void CGraphicContext::RestoreGuiRenderState()
+{
+  if (m_viewStack.empty())
+    return;
+
+  CServiceBroker::GetRenderSystem()->SetViewPort(StereoCorrection(m_viewStack.top()));
+  CServiceBroker::GetRenderSystem()->SetScissors(StereoCorrection(m_scissors));
+  if (!m_cameras.empty() && !m_stereoFactors.empty())
+    UpdateCameraPosition(m_cameras.top(), m_stereoFactors.top());
 }
 
 void CGraphicContext::GetGUIScaling(const RESOLUTION_INFO &res, float &scaleX, float &scaleY, TransformMatrix *matrix /* = NULL */)

@@ -81,6 +81,16 @@ public:
   const RESOLUTION_INFO GetResInfo() const;
   const RESOLUTION_INFO GetResInfo(RESOLUTION res) const;
   void SetResInfo(RESOLUTION res, const RESOLUTION_INFO& info);
+  /*!
+   * \brief True when the GUI renders into a reduced-resolution layer: an output mode taller than
+   * advancedsettings <gui><reducedguiheight> (DirectX, never with a stereo mode). GetWidth(),
+   * GetHeight() and GetResInfo() are in GUI pixels then, iScreenWidth/iScreenHeight stay the mode.
+   */
+  bool IsGuiReduced() const;
+  //! Scale a position in output pixels to GUI pixels (identity unless IsGuiReduced())
+  CPoint ScreenToGui(float x, float y) const;
+  //! Re-apply the GUI viewport, scissors and camera, e.g. after binding the GUI render target
+  void RestoreGuiRenderState();
 
   void Flip(bool rendered, bool videoLayer);
 
@@ -226,6 +236,8 @@ protected:
   void SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate);
   void ApplyVideoResolution(RESOLUTION res);
   void UpdateInternalStateWithResolution(RESOLUTION res);
+  //! GUI size / mode size for a reduced-resolution GUI (see IsGuiReduced), else 1
+  float GetGuiReduction(RESOLUTION res, int screenHeight) const;
 
   int m_iScreenHeight = 576;
   int m_iScreenWidth = 720;

@@ -137,6 +137,11 @@ bool CRenderSystemDX::DestroyRenderSystem()
     m_pGUIShader = nullptr;
   }
   m_rightEyeTex.Release();
+  m_guiTarget.Release();
+  m_guiDSV = nullptr;
+  m_BlendPremulState = nullptr;
+  m_guiTargetBound = false;
+  m_compositeActive = false;
   m_BlendEnableState = nullptr;
   m_BlendDisableState = nullptr;
   m_RSScissorDisable = nullptr;
@@ -334,6 +339,11 @@ bool CRenderSystemDX::BeginRender()
   if (m_pGUIShader)
     m_pGUIShader->BeginFrame(m_limitedColorRange);
   m_inScene = m_deviceResources->Begin();
+  if (m_inScene && m_splashTarget && BeginGuiTarget(true))
+  {
+    float black[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    m_deviceResources->ClearRenderTarget(m_guiTarget.GetRenderTarget(), black);
+  }
   return m_inScene;
 }
 
@@ -344,6 +354,12 @@ bool CRenderSystemDX::EndRender()
   if (!m_bRenderCreated)
     return false;
 
+  if (m_splashTarget && m_guiTargetBound)
+  {
+    EndGuiTarget();
+    CompositeGuiTarget();
+  }
+
   return true;
 }
 
@@ -351,6 +367,13 @@ void CRenderSystemDX::InvalidateColorBuffer()
 {
   if (!m_bRenderCreated)
     return;
+
+  // the GUI target persists across frames: render over it and the last GUI frame shows through
+  if (m_guiTargetBound)
+  {
+    ClearBuffers(0);
+    return;
+  }
 
   /* clear is not affected by stipple pattern, so we can only clear on first frame */
   if (m_stereoMode == RenderStereoMode::INTERLACED && m_stereoView == RenderStereoView::RIGHT)
@@ -376,7 +399,9 @@ bool CRenderSystemDX::ClearBuffers(KODI::UTILS::COLOR::Color color)
 
   float fColor[4];
   CD3DHelper::XMStoreColor(fColor, color);
-  ID3D11RenderTargetView* pRTView = m_deviceResources->GetBackBuffer().GetRenderTarget();
+  ID3D11RenderTargetView* pRTView = m_guiTargetBound
+                                        ? m_guiTarget.GetRenderTarget()
+                                        : m_deviceResources->GetBackBuffer().GetRenderTarget();
 
   if (m_stereoMode != RenderStereoMode::OFF && m_stereoMode != RenderStereoMode::MONO)
   {
@@ -404,9 +429,7 @@ bool CRenderSystemDX::ClearBuffers(KODI::UTILS::COLOR::Color color)
 
   if (pRTView)
   {
-    const auto outputSize = m_deviceResources->GetOutputSize();
-    CRect clRect(0.0f, 0.0f, static_cast<float>(outputSize.Width),
-                 static_cast<float>(outputSize.Height));
+    const CRect clRect = GetTargetRect();
 
     // Unlike Direct3D 9, D3D11 ClearRenderTargetView always clears full extent of the resource view.
     // Viewport and scissor settings are not applied. So clear RT by drawing full sized rect with clear color
@@ -422,11 +445,18 @@ bool CRenderSystemDX::ClearBuffers(KODI::UTILS::COLOR::Color color)
         SetAlphaBlendEnable(true);
     }
     else
+    {
       m_deviceResources->ClearRenderTarget(pRTView, fColor);
+      m_guiFullClear = m_guiFullClear || m_guiTargetBound;
+    }
+
+    // ClearRenderTargetView is no GUI draw: count an opaque clear, the composite must keep it
+    if (m_guiTargetBound && (color >> 24) != 0)
+      ++m_GUIElementCount;
   }
 
   if (GetEnabledFrontToBackRendering())
-    m_deviceResources->ClearDepthStencil();
+    ClearTargetDepthStencil();
 
   return true;
 }
@@ -575,11 +605,8 @@ void CRenderSystemDX::ResetScissors()
     return;
 
   auto m_pContext = m_deviceResources->GetD3DContext();
-  auto outputSize = m_deviceResources->GetOutputSize();
 
-  m_scissor.SetRect(0.0f, 0.0f,
-    static_cast<float>(outputSize.Width),
-    static_cast<float>(outputSize.Height));
+  m_scissor = GetTargetRect();
 
   m_pContext->RSSetState(m_RSScissorDisable.Get());
   m_ScissorsEnabled = false;
@@ -741,6 +768,216 @@ CD3DTexture& CRenderSystemDX::GetBackBuffer()
     return m_rightEyeTex;
 
   return m_deviceResources->GetBackBuffer();
+}
+
+void CRenderSystemDX::ShowSplash(const std::string& message)
+{
+  // the splash renders outside CApplication::Render: BeginRender/EndRender route it through the
+  // GUI target as well, else it would cover only a part of the output
+  m_splashTarget = CServiceBroker::GetWinSystem()->GetGfxContext().IsGuiReduced();
+  CRenderSystemBase::ShowSplash(message);
+  m_splashTarget = false;
+}
+
+CRect CRenderSystemDX::GetTargetRect()
+{
+  if (m_guiTargetBound)
+    return CRect(0.0f, 0.0f, static_cast<float>(m_guiTarget.GetWidth()),
+                 static_cast<float>(m_guiTarget.GetHeight()));
+
+  return GetBackBufferRect();
+}
+
+void CRenderSystemDX::ClearTargetDepthStencil() const
+{
+  if (m_guiTargetBound && m_guiDSV)
+    m_deviceResources->GetD3DContext()->ClearDepthStencilView(
+        m_guiDSV.Get(), D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 0.0f, 0);
+  else
+    m_deviceResources->ClearDepthStencil();
+}
+
+bool CRenderSystemDX::UpdateGuiTarget()
+{
+  const CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const UINT width = static_cast<UINT>(gfx.GetWidth());
+  const UINT height = static_cast<UINT>(gfx.GetHeight());
+  // the 2-bit alpha of a 10-bit (HDR) back buffer would ruin the GUI's translucency
+  const DXGI_FORMAT format =
+      m_deviceResources->GetBackBuffer().GetFormat() == DXGI_FORMAT_R10G10B10A2_UNORM
+          ? DXGI_FORMAT_R16G16B16A16_FLOAT
+          : DXGI_FORMAT_B8G8R8A8_UNORM;
+  // the output-sized depth stencil view cannot be bound with a smaller render target
+  const bool needDepth = GetEnabledFrontToBackRendering();
+
+  if (m_guiTarget.Get() && m_guiTarget.GetWidth() == width && m_guiTarget.GetHeight() == height &&
+      m_guiTarget.GetFormat() == format && (m_guiDSV != nullptr) == needDepth)
+    return true;
+
+  m_guiTarget.Release();
+  m_guiDSV = nullptr;
+  if (!m_guiTarget.Create(width, height, 1, D3D11_USAGE_DEFAULT, format))
+  {
+    CLog::LogF(LOGERROR, "failed to create the {}x{} GUI target", width, height);
+    return false;
+  }
+  m_deviceResources->Unregister(&m_guiTarget); // we will handle its health
+
+  auto pD3DDev = m_deviceResources->GetD3DDevice();
+  if (needDepth)
+  {
+    const CD3D11_TEXTURE2D_DESC depthDesc(DXGI_FORMAT_D24_UNORM_S8_UINT, width, height, 1, 1,
+                                          D3D11_BIND_DEPTH_STENCIL);
+    const CD3D11_DEPTH_STENCIL_VIEW_DESC dsvDesc(D3D11_DSV_DIMENSION_TEXTURE2D);
+    ComPtr<ID3D11Texture2D> depthStencil;
+    if (FAILED(pD3DDev->CreateTexture2D(&depthDesc, nullptr, &depthStencil)) ||
+        FAILED(pD3DDev->CreateDepthStencilView(depthStencil.Get(), &dsvDesc, &m_guiDSV)))
+    {
+      CLog::LogF(LOGERROR, "failed to create the {}x{} GUI depth stencil", width, height);
+      m_guiTarget.Release();
+      m_guiDSV = nullptr;
+      return false;
+    }
+  }
+
+  if (!m_BlendPremulState && m_BlendEnableState)
+  {
+    // GUI blending into the transparent target leaves colour multiplied by alpha
+    D3D11_BLEND_DESC desc;
+    m_BlendEnableState->GetDesc(&desc);
+    desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    pD3DDev->CreateBlendState(&desc, &m_BlendPremulState);
+  }
+
+  m_guiTargetFresh = true;
+  m_guiClean = true;
+  const auto outputSize = m_deviceResources->GetOutputSize();
+  CLog::LogF(LOGINFO, "GUI target {}x{} ({}) for a {}x{} output", width, height,
+             format == DXGI_FORMAT_R16G16B16A16_FLOAT ? "FP16" : "BGRA8",
+             static_cast<int>(outputSize.Width), static_cast<int>(outputSize.Height));
+  return true;
+}
+
+bool CRenderSystemDX::BeginGuiTarget(bool guiWillRender)
+{
+  if (!m_bRenderCreated)
+    return false;
+
+  CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
+  if (!gfx.IsGuiReduced())
+  {
+    // the output is no taller than the threshold (any more)
+    if (m_guiTarget.Get())
+    {
+      m_guiTarget.Release();
+      m_guiDSV = nullptr;
+    }
+    return false;
+  }
+
+  if (!UpdateGuiTarget())
+    return false;
+
+  // GL resets the count in BeginRender, DX did not: CompositeGuiTarget skips an empty GUI
+  m_GUIElementCount = 0;
+  m_guiWillRender = guiWillRender;
+  m_guiFullClear = false;
+  m_videoDrawn = false;
+
+  // a skipped GUI walk keeps the target's last frame for the composite
+  if (guiWillRender)
+  {
+    m_deviceResources->GetD3DContext()->OMSetRenderTargets(1, m_guiTarget.GetAddressOfRTV(),
+                                                           m_guiDSV.Get());
+    m_guiTargetBound = true;
+    if (m_guiTargetFresh)
+    {
+      // in full: ClearBuffers would honour the scissors
+      float transparent[4] = {};
+      m_deviceResources->ClearRenderTarget(m_guiTarget.GetRenderTarget(), transparent);
+      m_guiTargetFresh = false;
+    }
+    // the output-sized state of the last composite is still set
+    gfx.RestoreGuiRenderState();
+  }
+
+  return true;
+}
+
+void CRenderSystemDX::SetOutputRenderState()
+{
+  const CRect output = GetBackBufferRect();
+  SetViewPort(output);
+  SetCameraPosition(CPoint(output.Width() * 0.5f, output.Height() * 0.5f),
+                    static_cast<int>(output.Width()), static_cast<int>(output.Height()));
+  // not the gfx scissors, they are in GUI pixels
+  ResetScissors();
+  SetDepthCulling(DepthCulling::OFF);
+}
+
+void CRenderSystemDX::EndGuiTarget()
+{
+  CD3DTexture& backBuffer = m_deviceResources->GetBackBuffer();
+  m_deviceResources->GetD3DContext()->OMSetRenderTargets(1, backBuffer.GetAddressOfRTV(),
+                                                         m_deviceResources->GetDSV());
+  m_guiTargetBound = false;
+  m_compositeActive = true;
+  SetOutputRenderState();
+
+  // the RenderEx pass renders video with clear=false, nothing draws its black bars
+  const float black = m_limitedColorRange ? 16.0f / 255.0f : 0.0f;
+  float color[4] = {black, black, black, 1.0f};
+  m_deviceResources->ClearRenderTarget(backBuffer.GetRenderTarget(), color);
+}
+
+void CRenderSystemDX::CompositeGuiTarget()
+{
+  if (!m_compositeActive)
+    return;
+
+  m_compositeActive = false;
+  // a skipped GUI walk leaves the target, and whether it is empty, as it was; dirty regions render
+  // partially, so nothing drawn means empty only after a full clear or on an empty target
+  if (m_guiWillRender)
+    m_guiClean = GetGUIElementCount() == 0 && (m_guiFullClear || m_guiClean);
+  m_guiWillRender = false;
+  const bool videoDrawn = m_videoDrawn;
+  m_videoDrawn = false;
+  if (m_guiClean)
+    return;
+
+  // the video pass may have moved the viewport, camera or scissors
+  SetOutputRenderState();
+
+  auto pContext = m_deviceResources->GetD3DContext();
+  // over the video the target's premultiplied colour blends, alone it is copied
+  pContext->OMSetBlendState(videoDrawn ? m_BlendPremulState.Get() : m_BlendDisableState.Get(),
+                            nullptr, 0xFFFFFFFF);
+  // bilinear upscale; the noblend shader applies no range or tone mapping, the GUI draws did
+  CD3DTexture::DrawQuad(GetBackBufferRect(), 0xFFFFFFFF, &m_guiTarget, nullptr,
+                        SHADER_METHOD_RENDER_TEXTURE_NOBLEND, 1.0f);
+  CD3DHelper::PSClearShaderResources(pContext);
+  pContext->OMSetBlendState(m_BlendEnabled ? m_BlendEnableState.Get() : m_BlendDisableState.Get(),
+                            nullptr, 0xFFFFFFFF);
+}
+
+CRect CRenderSystemDX::GetVideoScissors()
+{
+  if (m_compositeActive)
+    return GetBackBufferRect();
+
+  const CGraphicContext& context = CServiceBroker::GetWinSystem()->GetGfxContext();
+  return context.StereoCorrection(context.GetScissors());
+}
+
+void CRenderSystemDX::RestoreVideoScissors()
+{
+  // the video pass of a reduced GUI is not clipped
+  if (m_compositeActive)
+    ResetScissors();
+  else
+    SetScissors(GetVideoScissors());
 }
 
 void CRenderSystemDX::CheckDeviceCaps()

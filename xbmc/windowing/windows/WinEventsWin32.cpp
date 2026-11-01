@@ -46,6 +46,7 @@
 #include "platform/win32/storage/Win32StorageProvider.h"
 
 #include <array>
+#include <cmath>
 #include <math.h>
 
 #include <Shlobj.h>
@@ -80,6 +81,21 @@ int g_sizeMoveY = -10000;
 int CWinEventsWin32::m_originalZoomDistance = 0;
 Pointer CWinEventsWin32::m_touchPointer;
 CGenericTouchSwipeDetector* CWinEventsWin32::m_touchSwipeDetector = nullptr;
+
+// pointer positions arrive in window pixels, the GUI may render at a reduced resolution
+template<typename T>
+static void ToGuiCoords(T& x, T& y)
+{
+  const auto winSystem = DX::Windowing();
+  if (!winSystem || !winSystem->GetGfxContext().IsGuiReduced())
+    return;
+
+  const CGraphicContext& gfx = winSystem->GetGfxContext();
+
+  const CPoint gui = gfx.ScreenToGui(static_cast<float>(x), static_cast<float>(y));
+  x = static_cast<T>(std::lround(gui.x));
+  y = static_cast<T>(std::lround(gui.y));
+}
 
 // register to receive SD card events (insert/remove)
 // seen at http://www.codeproject.com/Messages/2897423/Re-No-message-triggered-on-SD-card-insertion-remov.aspx
@@ -503,6 +519,7 @@ LRESULT CALLBACK CWinEventsWin32::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, L
       newEvent.type = XBMC_MOUSEMOTION;
       newEvent.motion.x = GET_X_LPARAM(lParam);
       newEvent.motion.y = GET_Y_LPARAM(lParam);
+      ToGuiCoords(newEvent.motion.x, newEvent.motion.y);
       if (appPort)
         appPort->OnEvent(newEvent);
       return(0);
@@ -512,6 +529,7 @@ LRESULT CALLBACK CWinEventsWin32::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, L
       newEvent.type = XBMC_MOUSEBUTTONDOWN;
       newEvent.button.x = GET_X_LPARAM(lParam);
       newEvent.button.y = GET_Y_LPARAM(lParam);
+      ToGuiCoords(newEvent.button.x, newEvent.button.y);
       newEvent.button.button = 0;
       if (uMsg == WM_LBUTTONDOWN) newEvent.button.button = XBMC_BUTTON_LEFT;
       else if (uMsg == WM_MBUTTONDOWN) newEvent.button.button = XBMC_BUTTON_MIDDLE;
@@ -525,6 +543,7 @@ LRESULT CALLBACK CWinEventsWin32::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, L
       newEvent.type = XBMC_MOUSEBUTTONUP;
       newEvent.button.x = GET_X_LPARAM(lParam);
       newEvent.button.y = GET_Y_LPARAM(lParam);
+      ToGuiCoords(newEvent.button.x, newEvent.button.y);
       newEvent.button.button = 0;
       if (uMsg == WM_LBUTTONUP) newEvent.button.button = XBMC_BUTTON_LEFT;
       else if (uMsg == WM_MBUTTONUP) newEvent.button.button = XBMC_BUTTON_MIDDLE;
@@ -589,8 +608,12 @@ LRESULT CALLBACK CWinEventsWin32::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, L
         const CGraphicContext& gfxContext = DX::Windowing()->GetGfxContext();
         const RESOLUTION_INFO& desktop =
             CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP);
-        if (gfxContext.IsFullScreenRoot() &&
-            (gfxContext.GetWidth() != desktop.iWidth || gfxContext.GetHeight() != desktop.iHeight))
+        // a reduced-resolution GUI is smaller than its mode: compare the modes then
+        const bool guiReduced = gfxContext.IsGuiReduced();
+        const RESOLUTION_INFO current = gfxContext.GetResInfo();
+        const int width = guiReduced ? current.iScreenWidth : gfxContext.GetWidth();
+        const int height = guiReduced ? current.iScreenHeight : gfxContext.GetHeight();
+        if (gfxContext.IsFullScreenRoot() && (width != desktop.iWidth || height != desktop.iHeight))
           CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SETVIDEORESOLUTION, RES_DESKTOP, 1);
       }
       return(0);
@@ -927,6 +950,7 @@ void CWinEventsWin32::WindowFromScreenCoords(HWND hWnd, POINT *point)
   ClientToScreen(hWnd, &windowPos);
   point->x -= windowPos.x;
   point->y -= windowPos.y;
+  ToGuiCoords(point->x, point->y);
 }
 
 void CWinEventsWin32::OnGestureNotify(HWND hWnd, LPARAM lParam)

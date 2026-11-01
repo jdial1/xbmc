@@ -213,9 +213,31 @@ void CWinRenderer::RenderUpdate(int index, int index2, bool clear, unsigned int 
   DX::Windowing()->SetAlphaBlendEnable(alpha < 255);
 
   ManageRenderArea();
-  m_renderer->Render(index, index2, DX::Windowing()->GetBackBuffer(), m_sourceRect, m_destRect,
-                     GetScreenRect(), flags);
+
+  // the rects are in GUI pixels (m_destRect also feeds GetVideoRect for overlays and captures);
+  // under a reduced-resolution GUI the video is drawn at the output resolution
+  CRect destRect = m_destRect;
+  CRect screenRect = GetScreenRect();
+  if (CServiceBroker::GetWinSystem()->GetGfxContext().IsGuiReduced())
+  {
+    const CRect output = DX::Windowing()->GetBackBufferRect();
+    const float scaleX = output.Width() / screenRect.Width();
+    const float scaleY = output.Height() / screenRect.Height();
+    destRect = CRect(destRect.x1 * scaleX, destRect.y1 * scaleY, destRect.x2 * scaleX,
+                     destRect.y2 * scaleY);
+    screenRect = output;
+  }
+
+  m_renderer->Render(index, index2, DX::Windowing()->GetBackBuffer(), m_sourceRect, destRect,
+                     screenRect, flags);
+  DX::Windowing()->SetVideoDrawn();
   DX::Windowing()->SetAlphaBlendEnable(true);
+}
+
+bool CWinRenderer::IsGuiLayer()
+{
+  // checked each call: a refresh rate switch to a mode no taller than the threshold falls back
+  return !CServiceBroker::GetWinSystem()->GetGfxContext().IsGuiReduced();
 }
 
 void CWinRenderer::SetBufferSize(int numBuffers)

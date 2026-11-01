@@ -730,10 +730,12 @@ void CGUIWindowSlideShow::Render()
     return;
 
   CGraphicContext& gfxCtx = CServiceBroker::GetWinSystem()->GetGfxContext();
-  // HDR video is drawn underneath the GUI, by the window below the slideshow
-  const bool hdrVideo =
-      IsVideo(*m_slides.at(m_iCurrentSlide)) && CServiceBroker::GetWinSystem()->IsHdrComposite();
-  gfxCtx.Clear(hdrVideo ? 0 : 0xff000000);
+  // HDR video, and video under a reduced-resolution GUI, is drawn underneath the GUI, by the
+  // window below the slideshow
+  const bool videoUnderGui = IsVideo(*m_slides.at(m_iCurrentSlide)) &&
+                             (CServiceBroker::GetWinSystem()->IsHdrComposite() ||
+                              CServiceBroker::GetWinSystem()->IsVideoUnderGui());
+  gfxCtx.Clear(videoUnderGui ? 0 : 0xff000000);
 
   auto& components = CServiceBroker::GetAppComponents();
   const auto appPlayer = components.GetComponent<CApplicationPlayer>();

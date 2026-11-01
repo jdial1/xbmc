@@ -28,6 +28,7 @@
 #include "utils/SystemInfo.h"
 #include "utils/Variant.h"
 #include "utils/log.h"
+#include "windowing/GraphicContext.h"
 #include "windowing/windows/WinKeyMap.h"
 
 #include "platform/win10/input/RemoteControlXbox.h"
@@ -52,7 +53,14 @@ using namespace PERIPHERALS;
 static winrt::Point GetScreenPoint(winrt::Point point)
 {
   auto dpi = DX::DeviceResources::Get()->GetDpi();
-  return winrt::Point(DX::ConvertDipsToPixels(point.X, dpi), DX::ConvertDipsToPixels(point.Y, dpi));
+  const winrt::Point screen(DX::ConvertDipsToPixels(point.X, dpi),
+                            DX::ConvertDipsToPixels(point.Y, dpi));
+  // in GUI pixels, the GUI may render at a reduced resolution
+  const auto winSystem = DX::Windowing();
+  if (!winSystem)
+    return screen;
+  const CPoint gui = winSystem->GetGfxContext().ScreenToGui(screen.X, screen.Y);
+  return winrt::Point(gui.x, gui.y);
 }
 
 CWinEventsWin10::CWinEventsWin10() = default;

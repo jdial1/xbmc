@@ -204,7 +204,7 @@ void CRendererHQ::FinalOutput(CD3DTexture& source, CD3DTexture& target, const CR
     }
 
     CRect area = destRect;
-    area.Intersect(context.StereoCorrection(context.GetScissors()));
+    area.Intersect(DX::Windowing()->GetVideoScissors());
     area.Intersect(CRect(0.0f, 0.0f, static_cast<float>(target.GetWidth()),
                          static_cast<float>(target.GetHeight())));
     if (area.IsEmpty())
@@ -222,8 +222,7 @@ void CRendererHQ::FinalOutput(CD3DTexture& source, CD3DTexture& target, const CR
     // restore view port
     DX::DeviceResources::Get()->GetD3DContext()->RSSetViewports(1, &viewPort);
     // restore scissors
-    auto& context = CServiceBroker::GetWinSystem()->GetGfxContext();
-    DX::Windowing()->SetScissors(context.StereoCorrection(context.GetScissors()));
+    DX::Windowing()->RestoreVideoScissors();
     // render frame
     __super::FinalOutput(source, target, sourceRect, destPoints);
   }

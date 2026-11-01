@@ -104,7 +104,7 @@ bool CWinSystemWin10DX::DestroyRenderSystem()
 
 void CWinSystemWin10DX::ShowSplash(const std::string & message)
 {
-  CRenderSystemBase::ShowSplash(message);
+  CRenderSystemDX::ShowSplash(message);
 
   // this will prevent killing the app by watchdog timeout during loading
   if (m_coreWindow != nullptr)

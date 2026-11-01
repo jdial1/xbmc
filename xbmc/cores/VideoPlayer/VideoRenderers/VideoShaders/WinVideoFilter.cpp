@@ -1289,7 +1289,7 @@ void CConvolutionShaderSeparable::SetStepParams(unsigned iPass)
     // at the second pass m_IntermediateTarget is a source of data
     m_effect.SetTexture("g_Texture", m_IntermediateTarget);
     // restore scissor
-    DX::Windowing()->SetScissors(CServiceBroker::GetWinSystem()->GetGfxContext().StereoCorrection(CServiceBroker::GetWinSystem()->GetGfxContext().GetScissors()));
+    DX::Windowing()->RestoreVideoScissors();
   }
   // setting view port
   pContext->RSSetViewports(1, &viewPort);

@@ -273,6 +273,9 @@ public:
   virtual bool BeginGuiComposite(bool guiWillRender) { return false; }
   virtual void EndGuiComposite() {}
   virtual void CompositeGui() {}
+  // True while the GUI renders into a layer that is composited over video drawn afterwards
+  // (DirectX reduced-resolution GUI): windowed video must leave a transparent hole in the GUI
+  virtual bool IsVideoUnderGui() const { return false; }
 
   // True when GUI is rendered to an FBO that is then color-transformed
   // (sRGB -> PQ/HLG) and composited against HDR video in that non-linear
