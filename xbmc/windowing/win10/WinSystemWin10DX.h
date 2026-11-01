@@ -11,6 +11,7 @@
 #include "HDRStatus.h"
 #include "WinSystemWin10.h"
 #include "rendering/dx/RenderSystemDX.h"
+#include "windowing/MainLoopWake.h"
 
 class CWinSystemWin10DX : public CWinSystemWin10, public CRenderSystemDX
 {
@@ -89,5 +90,7 @@ protected:
   void CreateBackBuffer() override;
   void ResizeDeviceBuffers() override;
   bool IsStereoEnabled() override;
+
+  KODI::WINDOWING::CIdleFramePacer m_idlePacer;
 };
 

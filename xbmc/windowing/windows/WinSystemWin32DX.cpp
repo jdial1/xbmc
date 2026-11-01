@@ -16,6 +16,7 @@
 #include "utils/SystemInfo.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WindowSystemFactory.h"
 
@@ -76,8 +77,8 @@ void CWinSystemWin32DX::PresentRenderImpl(bool rendered)
     OnDisplayReset();
   }
 
-  if (!rendered)
-    KODI::TIME::Sleep(40ms);
+  // idle frame: wait at most one refresh period (40 ms once the GUI is idle); input wakes it at once
+  m_idlePacer.FrameDone(rendered, GetGfxContext().GetFPS(), true);
 }
 
 bool CWinSystemWin32DX::CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res)

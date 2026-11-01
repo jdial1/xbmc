@@ -1,10 +1,12 @@
 set(SOURCES GraphicContext.cpp
+            MainLoopWake.cpp
             OSScreenSaver.cpp
             Resolution.cpp
             WindowSystemFactory.cpp
             WinSystem.cpp)
 
 set(HEADERS GraphicContext.h
+            MainLoopWake.h
             OSScreenSaver.h
             Resolution.h
             WinEvents.h

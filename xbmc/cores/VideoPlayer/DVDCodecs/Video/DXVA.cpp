@@ -1235,7 +1235,8 @@ static bool HasATIMP2Bug(AVCodecContext* avctx)
 {
   const DXGI_ADAPTER_DESC AIdentifier = DX::DeviceResources::Get()->GetAdapterDesc();
 
-  if (AIdentifier.VendorId != PCIV_AMD)
+  // desktop AMD/ATI driver issue; Xbox only reports the AMD vendor id for the HDR workarounds
+  if (AIdentifier.VendorId != PCIV_AMD || CSysInfo::GetWindowsDeviceFamily() == CSysInfo::Xbox)
     return false;
 
   // AMD/ATI card doesn't like some SD MPEG2 content
@@ -1250,7 +1251,8 @@ static bool HasAMDH264SDiBug(AVCodecContext* avctx)
 {
   const DXGI_ADAPTER_DESC AIdentifier = DX::DeviceResources::Get()->GetAdapterDesc();
 
-  if (AIdentifier.VendorId != PCIV_AMD)
+  // desktop AMD/ATI driver issue; Xbox only reports the AMD vendor id for the HDR workarounds
+  if (AIdentifier.VendorId != PCIV_AMD || CSysInfo::GetWindowsDeviceFamily() == CSysInfo::Xbox)
     return false;
 
   // AMD card has issues with SD H264 interlaced content

@@ -580,6 +580,11 @@ void DX::DeviceResources::DestroySwapChain()
   m_swapChain->GetFullscreenState(&bFullcreen, nullptr);
   if (!!bFullcreen)
     m_swapChain->SetFullscreenState(false, nullptr); // mandatory before releasing swapchain
+  if (m_frameLatencyWaitable)
+  {
+    CloseHandle(m_frameLatencyWaitable);
+    m_frameLatencyWaitable = nullptr;
+  }
   m_swapChain = nullptr;
   m_deferrContext->Flush();
   m_d3dContext->Flush();
@@ -614,9 +619,11 @@ void DX::DeviceResources::ResizeBuffers()
   if (m_swapChain) // If the swap chain already exists, resize it.
   {
     m_swapChain->GetDesc1(&scDesc);
-    hr = m_swapChain->ResizeBuffers(scDesc.BufferCount, lround(m_outputSize.Width),
-                                    lround(m_outputSize.Height), scDesc.Format,
-                                    windowed ? 0 : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH);
+    // the frame-latency waitable flag can't be added or removed by ResizeBuffers: keep what was created
+    hr = m_swapChain->ResizeBuffers(
+        scDesc.BufferCount, lround(m_outputSize.Width), lround(m_outputSize.Height), scDesc.Format,
+        (windowed ? 0 : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH) |
+            (scDesc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT));
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
     {
@@ -675,6 +682,9 @@ void DX::DeviceResources::ResizeBuffers()
                                    ? DXGI_SWAP_EFFECT_FLIP_DISCARD
                                    : DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     swapChainDesc.Flags = windowed ? 0 : DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+#ifdef TARGET_WINDOWS_STORE
+    swapChainDesc.Flags |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+#endif
     swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.SampleDesc.Quality = 0;
@@ -731,6 +741,16 @@ void DX::DeviceResources::ResizeBuffers()
 
     hr = swapChain.As(&m_swapChain); CHECK_ERR();
     m_stereoEnabled = bHWStereoEnabled;
+
+    if (swapChainDesc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)
+    {
+      ComPtr<IDXGISwapChain2> swapChain2;
+      if (SUCCEEDED(m_swapChain.As(&swapChain2)) &&
+          SUCCEEDED(swapChain2->SetMaximumFrameLatency(1)))
+        m_frameLatencyWaitable = swapChain2->GetFrameLatencyWaitableObject();
+      CLog::LogF(LOGINFO, "frame latency waitable object is{}used",
+                 m_frameLatencyWaitable ? " " : " NOT ");
+    }
 
     if (CServiceBroker::GetLogging().IsLogLevelLogged(LOGDEBUG) &&
         CServiceBroker::GetLogging().CanLogComponent(LOGVIDEO))
@@ -1003,6 +1023,12 @@ bool DX::DeviceResources::Begin()
 // Present the contents of the swap chain to the screen.
 void DX::DeviceResources::Present()
 {
+  // Wait for a free frame-latency slot before replaying/presenting: this is the vsync wait, done here as
+  // a kernel wait outside any D3D call so it holds no device lock. Exactly one wait per Present1 (Begin()
+  // also runs for frames that end up not rendering). The timeout only guards against a lost swap chain.
+  if (m_frameLatencyWaitable)
+    WaitForSingleObjectEx(m_frameLatencyWaitable, 100, TRUE);
+
   FinishCommandList();
 
   // The first argument instructs DXGI to block until VSync, putting the application

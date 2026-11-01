@@ -47,6 +47,8 @@ namespace DX
     void HandleDeviceLost(bool removed);
     bool Begin();
     void Present();
+    /*! true when frame pacing uses the swap chain's frame-latency waitable object (UWP) */
+    bool HasFrameLatencyWaitable() const { return m_frameLatencyWaitable != nullptr; }
 
     // The size of the render target, in pixels.
     winrt::Windows::Foundation::Size GetOutputSize() const { return m_outputSize; }
@@ -176,6 +178,7 @@ namespace DX
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_d3dContext;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_deferrContext;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> m_swapChain;
+    HANDLE m_frameLatencyWaitable{nullptr};
 #ifdef _DEBUG
     Microsoft::WRL::ComPtr<ID3D11Debug> m_d3dDebug;
 #endif

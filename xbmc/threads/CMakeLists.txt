@@ -1,6 +1,7 @@
 set(SOURCES Event.cpp
             Thread.cpp
-            Timer.cpp)
+            Timer.cpp
+            WakeSignal.cpp)
 
 set(HEADERS Condition.h
             CriticalSection.h
@@ -11,6 +12,7 @@ set(HEADERS Condition.h
             SystemClock.h
             Thread.h
             Timer.h
+            WakeSignal.h
             IThreadImpl.h
             IRunnable.h)
 

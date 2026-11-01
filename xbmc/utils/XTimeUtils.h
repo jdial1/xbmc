@@ -55,6 +55,17 @@ void GetLocalTime(SystemTime* systemTime);
 */
 std::tuple<bool, int64_t> GetTimezoneBias(const SystemTime& time);
 
+#if defined(TARGET_WINDOWS)
+/*! \brief Arm this thread's high-resolution waitable timer to fire after \p duration.
+ Windows timed waits otherwise round up to the system timer tick (15.6 ms) unless the process raised
+ the timer resolution with timeBeginPeriod, which UWP apps cannot call.
+ \return the timer handle to wait on, or nullptr if high-resolution timers are unavailable. */
+HANDLE ArmHighResolutionTimer(std::chrono::nanoseconds duration);
+
+/*! \brief Sleep using a high-resolution waitable timer (falls back to std::this_thread::sleep_for). */
+void SleepHighResolution(std::chrono::nanoseconds duration);
+#endif
+
 template<typename Rep, typename Period>
 void Sleep(std::chrono::duration<Rep, Period> duration)
 {
@@ -64,7 +75,11 @@ void Sleep(std::chrono::duration<Rep, Period> duration)
     return;
   }
 
+#if defined(TARGET_WINDOWS)
+  SleepHighResolution(std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+#else
   std::this_thread::sleep_for(duration);
+#endif
 }
 
 int FileTimeToLocalFileTime(const FileTime* fileTime, FileTime* localFileTime);

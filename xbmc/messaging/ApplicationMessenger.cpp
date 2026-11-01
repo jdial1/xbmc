@@ -14,6 +14,7 @@
 #include "threads/SingleLock.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/WinSystem.h"
 
 #include <memory>
@@ -123,6 +124,7 @@ int CApplicationMessenger::SendMsg(ThreadMessage&& message, bool wait)
     m_vecWindowMessages.push(msg);
   else
     m_vecMessages.push(msg);
+  KODI::WINDOWING::WakeMainLoop();
   lock.unlock(); // this releases the lock on the vec of messages and
       //   allows the ProcessMessage to execute and therefore
       //   delete the message itself. Therefore any access

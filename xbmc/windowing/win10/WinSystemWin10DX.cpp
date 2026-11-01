@@ -13,6 +13,8 @@
 #include "rendering/dx/DirectXHelper.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
+#include "windowing/GraphicContext.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/WindowSystemFactory.h"
 
 #include "platform/win32/WIN32Util.h"
@@ -48,8 +50,8 @@ void CWinSystemWin10DX::PresentRenderImpl(bool rendered)
     OnDisplayReset();
   }
 
-  if (!rendered)
-    KODI::TIME::Sleep(40ms);
+  // idle frame: wait at most one refresh period (40 ms once the GUI is idle); input wakes it at once
+  m_idlePacer.FrameDone(rendered, GetGfxContext().GetFPS(), false);
 }
 
 bool CWinSystemWin10DX::CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res)

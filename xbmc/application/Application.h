@@ -249,6 +249,7 @@ private:
 
   CCriticalSection m_frameMoveGuard;              /*!< critical section for synchronizing GUI actions from inside and outside (python) */
   std::atomic_uint m_WaitingExternalCalls;        /*!< counts threads which are waiting to be processed in FrameMove */
+  std::atomic_uint m_ExternalCallsCompleted{0};   /*!< external calls finished; lets FrameMove close its window early */
   unsigned int m_ProcessedExternalCalls = 0;      /*!< counts calls which are processed during one "door open" cycle in FrameMove */
   unsigned int m_ProcessedExternalDecay = 0;      /*!< counts to close door after a few frames of no python activity */
   int m_ExitCode{EXITCODE_QUIT};

@@ -8,6 +8,8 @@
 
 #include "InputManager.h"
 
+#include "windowing/MainLoopWake.h"
+
 #include "ServiceBroker.h"
 #include "application/AppInboundProtocol.h"
 #include "application/Application.h"
@@ -344,12 +346,14 @@ void CInputManager::QueueAction(const CAction& action)
   }
 
   m_queuedActions.push_back(action);
+  KODI::WINDOWING::WakeMainLoop();
 }
 
 void CInputManager::QueueCecKey(const CKey& key)
 {
   std::unique_lock lock(m_cecKeyMutex);
   m_queuedCecKeys.emplace_back(key);
+  KODI::WINDOWING::WakeMainLoop();
 }
 
 bool CInputManager::Process(int windowId, float frameTime)

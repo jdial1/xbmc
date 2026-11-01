@@ -13,6 +13,7 @@
 //////////////////////////////////////////////////////////////////////
 
 #include "Event.h"
+#include "utils/XTimeUtils.h"
 
 #include <atomic>
 #include <future>
@@ -62,7 +63,7 @@ public:
     if (duration > std::chrono::milliseconds(10) && IsCurrentThread())
       m_StopEvent.Wait(duration);
     else
-      std::this_thread::sleep_for(duration);
+      KODI::TIME::Sleep(duration);
   }
 
   bool IsAutoDelete() const;

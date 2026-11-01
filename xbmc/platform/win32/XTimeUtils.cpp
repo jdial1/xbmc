@@ -10,6 +10,8 @@
 
 #include "platform/win32/CharsetConverter.h"
 
+#include <algorithm>
+
 #include <FileAPI.h>
 #include <Windows.h>
 
@@ -33,6 +35,49 @@ static_assert(offsetof(SystemTime, hour) == offsetof(SYSTEMTIME, wHour));
 static_assert(offsetof(SystemTime, minute) == offsetof(SYSTEMTIME, wMinute));
 static_assert(offsetof(SystemTime, second) == offsetof(SYSTEMTIME, wSecond));
 } // namespace
+
+namespace
+{
+struct ThreadHighResolutionTimer
+{
+  ThreadHighResolutionTimer()
+    : handle(CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                    TIMER_ALL_ACCESS))
+  {
+  }
+  ~ThreadHighResolutionTimer()
+  {
+    if (handle)
+      CloseHandle(handle);
+  }
+  ThreadHighResolutionTimer(const ThreadHighResolutionTimer&) = delete;
+  ThreadHighResolutionTimer& operator=(const ThreadHighResolutionTimer&) = delete;
+
+  HANDLE handle;
+};
+} // namespace
+
+HANDLE ArmHighResolutionTimer(std::chrono::nanoseconds duration)
+{
+  // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION needs Windows 10 1803; earlier systems get nullptr
+  thread_local ThreadHighResolutionTimer timer;
+  if (!timer.handle)
+    return nullptr;
+
+  LARGE_INTEGER due;
+  due.QuadPart = -std::max<LONGLONG>(1, duration.count() / 100); // relative, 100 ns units
+  if (!SetWaitableTimerEx(timer.handle, &due, 0, nullptr, nullptr, nullptr, 0))
+    return nullptr;
+  return timer.handle;
+}
+
+void SleepHighResolution(std::chrono::nanoseconds duration)
+{
+  HANDLE timer = ArmHighResolutionTimer(duration);
+  if (timer && WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0)
+    return;
+  std::this_thread::sleep_for(duration);
+}
 
 std::tuple<bool, int64_t> GetTimezoneBias(const SystemTime& time)
 {

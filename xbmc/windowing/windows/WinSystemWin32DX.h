@@ -10,6 +10,7 @@
 
 #include "HDRStatus.h"
 #include "rendering/dx/RenderSystemDX.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/windows/WinSystemWin32.h"
 
 struct D3D10DDIARG_CREATERESOURCE;
@@ -98,5 +99,6 @@ protected:
   bool ChangeResolution(const RESOLUTION_INFO& res, bool forceChange = false) override;
 
   HMODULE m_hDriverModule;
+  KODI::WINDOWING::CIdleFramePacer m_idlePacer;
 };
 

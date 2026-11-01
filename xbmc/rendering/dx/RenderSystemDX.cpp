@@ -296,7 +296,9 @@ void CRenderSystemDX::PresentRender(bool rendered, bool videoLayer)
     CD3DHelper::PSClearShaderResources(m_pContext);
   }
 
-  // time for decoder that may require the context
+  // time for decoder that may require the context; not needed when the vsync wait happens on the
+  // frame-latency object before rendering, because Present then doesn't block under the device lock
+  if (!m_deviceResources->HasFrameLatencyWaitable())
   {
     std::unique_lock lock(m_decoderSection);
     XbmcThreads::EndTime<> timer;

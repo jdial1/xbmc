@@ -58,6 +58,8 @@ static winrt::Point GetScreenPoint(winrt::Point point)
 CWinEventsWin10::CWinEventsWin10() = default;
 CWinEventsWin10::~CWinEventsWin10() = default;
 
+#include "windowing/MainLoopWake.h"
+
 void CWinEventsWin10::InitOSKeymap(void)
 {
   KODI::WINDOWING::WINDOWS::DIB_InitOSKeymap();
@@ -75,6 +77,7 @@ void CWinEventsWin10::MessagePush(XBMC_Event *newEvent)
     || newEvent->type == XBMC_TOUCH)
   {
     m_events.push(*newEvent);
+    KODI::WINDOWING::WakeMainLoop();
   }
   else
   {

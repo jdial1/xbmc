@@ -1315,6 +1315,7 @@ void CApplication::LockFrameMoveGuard()
 void CApplication::UnlockFrameMoveGuard()
 {
   --m_WaitingExternalCalls;
+  ++m_ExternalCallsCompleted;
   CServiceBroker::GetWinSystem()->GetGfxContext().unlock();
   m_frameMoveGuard.unlock();
 }
@@ -1369,7 +1370,19 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
       if (!appPlayer->IsPlayingVideo() || appPlayer->IsPausedPlayback())
         max_sleep = 80;
       unsigned int sleepTime = std::max(static_cast<unsigned int>(2), std::min(m_ProcessedExternalCalls >> 2, max_sleep));
-      KODI::TIME::Sleep(std::chrono::milliseconds(sleepTime));
+      // The window is an upper bound, not a fixed sleep: it closes once no caller is waiting and none
+      // completed during the last millisecond (callers in a loop re-enter within that and keep it open).
+      using namespace std::chrono_literals;
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(sleepTime);
+      unsigned int seen = m_ExternalCallsCompleted.load(std::memory_order_relaxed);
+      while (std::chrono::steady_clock::now() < deadline)
+      {
+        KODI::TIME::Sleep(1ms);
+        const unsigned int completed = m_ExternalCallsCompleted.load(std::memory_order_relaxed);
+        if (m_WaitingExternalCalls == 0 && completed == seen)
+          break; // drained and nobody new: close the door
+        seen = completed;
+      }
       m_frameMoveGuard.lock();
       m_ProcessedExternalDecay = 5;
     }
