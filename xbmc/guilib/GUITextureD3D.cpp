@@ -11,7 +11,14 @@
 #include "D3DResource.h"
 #include "GUIShaderDX.h"
 #include "TextureDX.h"
+#include "ServiceBroker.h"
+#include "rendering/dx/DeviceResources.h"
 #include "rendering/dx/RenderContext.h"
+#include "windowing/GraphicContext.h"
+#include "windowing/WinSystem.h"
+
+#include <array>
+#include <limits>
 
 #include <DirectXMath.h>
 
@@ -121,12 +128,7 @@ void CGUITextureD3D::Draw(float *x, float *y, float *z, const CRect &texture, co
   CDXTexture* tex = static_cast<CDXTexture*>(m_texture.m_textures[m_currentFrame].get());
   CGUIShaderDX* pGUIShader = DX::Windowing()->GetGUIShader();
 
-  pGUIShader->Begin(m_diffuse.size() > 0 ? (m_scalingMethod == TEXTURE_SCALING::NEAREST
-                                                ? SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND_NEAREST
-                                                : SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND)
-                                         : (m_scalingMethod == TEXTURE_SCALING::NEAREST
-                                                ? SHADER_METHOD_RENDER_TEXTURE_BLEND_NEAREST
-                                                : SHADER_METHOD_RENDER_TEXTURE_BLEND));
+  pGUIShader->Begin(ShaderMethod());
 
   if (m_diffuse.size())
   {
@@ -141,6 +143,127 @@ void CGUITextureD3D::Draw(float *x, float *y, float *z, const CRect &texture, co
   }
   pGUIShader->SetDepth(m_depth);
   pGUIShader->DrawQuad(verts[0], verts[1], verts[2], verts[3]);
+}
+
+unsigned int CGUITextureD3D::ShaderMethod() const
+{
+  return m_diffuse.size() > 0 ? (m_scalingMethod == TEXTURE_SCALING::NEAREST
+                                     ? SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND_NEAREST
+                                     : SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND)
+                              : (m_scalingMethod == TEXTURE_SCALING::NEAREST
+                                     ? SHADER_METHOD_RENDER_TEXTURE_BLEND_NEAREST
+                                     : SHADER_METHOD_RENDER_TEXTURE_BLEND);
+}
+
+namespace
+{
+std::array<CPoint, 4> TexCoordCorners(const CRect& rect, bool swapXY)
+{
+  if (swapXY)
+    return {{{rect.x1, rect.y1}, {rect.x1, rect.y2}, {rect.x2, rect.y2}, {rect.x2, rect.y1}}};
+
+  return {{{rect.x1, rect.y1}, {rect.x2, rect.y1}, {rect.x2, rect.y2}, {rect.x1, rect.y2}}};
+}
+} // namespace
+
+void CGUITextureD3D::Free()
+{
+  m_quadBuffer = nullptr;
+  m_quadBufferVersion = 0;
+  m_quadCount = 0;
+}
+
+bool CGUITextureD3D::DrawQuads(const std::vector<Quad>& quads,
+                               unsigned int version,
+                               const CRect& rect)
+{
+  CGUIShaderDX* pGUIShader = DX::Windowing()->GetGUIShader();
+  ID3D11Device* device = DX::DeviceResources::Get()->GetD3DDevice();
+  if (!pGUIShader || !pGUIShader->HasQuadPath() || !device ||
+      quads.size() > CGUIShaderDX::MAX_GUI_QUADS)
+    return false;
+
+  // a buffer holds a reference to the device it was created on, so this also catches device loss
+  Microsoft::WRL::ComPtr<ID3D11Device> bufferDevice;
+  if (m_quadBuffer)
+    m_quadBuffer->GetDevice(bufferDevice.GetAddressOf());
+  if (m_quadBufferVersion != version || (m_quadBuffer && bufferDevice.Get() != device))
+  {
+    std::vector<CGUIShaderDX::QuadVertex> vertices;
+    vertices.reserve(quads.size() * 4);
+    for (const Quad& quad : quads)
+    {
+      const CRect& a = quad.anchor;
+      const CRect& o = quad.offset;
+      const std::array<std::array<float, 4>, 4> corners{{{a.x1, a.y1, o.x1, o.y1},
+                                                         {a.x2, a.y1, o.x2, o.y1},
+                                                         {a.x2, a.y2, o.x2, o.y2},
+                                                         {a.x1, a.y2, o.x1, o.y2}}};
+      const std::array<CPoint, 4> texCoords = TexCoordCorners(quad.texture, GetOrientation() & 4);
+      const std::array<CPoint, 4> diffuseCoords =
+          TexCoordCorners(quad.diffuse, m_info.orientation & 4);
+      for (std::size_t i = 0; i < 4; i++)
+      {
+        const std::size_t opposite = (i + 2) % 4;
+        vertices.push_back({{corners[i][0], corners[i][1], corners[i][2], corners[i][3]},
+                            {corners[opposite][0], corners[opposite][1], corners[opposite][2],
+                             corners[opposite][3]},
+                            {texCoords[i].x, texCoords[i].y, texCoords[opposite].x,
+                             texCoords[opposite].y},
+                            {diffuseCoords[i].x, diffuseCoords[i].y, diffuseCoords[opposite].x,
+                             diffuseCoords[opposite].y}});
+      }
+    }
+
+    m_quadBuffer = nullptr;
+    m_quadCount = 0;
+    if (!vertices.empty())
+    {
+      CD3D11_BUFFER_DESC desc(static_cast<UINT>(vertices.size() * sizeof(vertices[0])),
+                              D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_IMMUTABLE);
+      D3D11_SUBRESOURCE_DATA data = {vertices.data(), 0, 0};
+      if (FAILED(device->CreateBuffer(&desc, &data, m_quadBuffer.ReleaseAndGetAddressOf())))
+        return false;
+    }
+    m_quadBufferVersion = version;
+    m_quadCount = static_cast<unsigned int>(quads.size());
+  }
+
+  if (m_quadCount == 0)
+    return true;
+
+  CGraphicContext& context = CServiceBroker::GetWinSystem()->GetGfxContext();
+  constexpr float unbounded = std::numeric_limits<float>::max();
+  const CRect clip = context.HasClipRegion() ? context.GetClipRegion()
+                                             : CRect(-unbounded, -unbounded, unbounded, unbounded);
+  const TransformMatrix& gui = context.GetGUIMatrix();
+
+  CGUIShaderDX::QuadConstants constants;
+  constants.rect = {rect.x1, rect.y1, rect.Width(), rect.Height()};
+  constants.clip = {clip.x1, clip.y1, clip.x2, clip.y2};
+  for (int row = 0; row < 3; row++)
+    constants.gui[row] = {gui.m[row][0], gui.m[row][1], gui.m[row][2], gui.m[row][3]};
+  CD3DHelper::XMStoreColor(&constants.color, m_col);
+  constants.texSwap = {(GetOrientation() & 4) ? 1.0f : 0.0f, (m_info.orientation & 4) ? 1.0f : 0.0f};
+  constants.snap = m_moving ? 2.0f : 1.0f;
+  constants.pad = 0.0f;
+
+  CDXTexture* tex = static_cast<CDXTexture*>(m_texture.m_textures[m_currentFrame].get());
+  pGUIShader->Begin(ShaderMethod());
+  if (m_diffuse.size())
+  {
+    CDXTexture* diff = static_cast<CDXTexture*>(m_diffuse.m_textures[0].get());
+    ID3D11ShaderResourceView* resource[] = {tex->GetShaderResource(), diff->GetShaderResource()};
+    pGUIShader->SetShaderViews(ARRAYSIZE(resource), resource);
+  }
+  else
+  {
+    ID3D11ShaderResourceView* resource = tex->GetShaderResource();
+    pGUIShader->SetShaderViews(1, &resource);
+  }
+  pGUIShader->SetDepth(m_depth);
+  pGUIShader->DrawGUIQuads(m_quadBuffer.Get(), m_quadCount, constants);
+  return true;
 }
 
 void CGUITextureD3D::DrawQuad(const CRect& rect,

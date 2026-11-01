@@ -22,6 +22,7 @@
 #include "guishader_interlaced_right.h"
 #include "guishader_multi_texture_blend.h"
 #include "guishader_multi_texture_blend_nearest.h"
+#include "guishader_quad_vert.h"
 #include "guishader_texture.h"
 #include "guishader_texture_nearest.h"
 #include "guishader_texture_noblend.h"
@@ -127,6 +128,20 @@ bool CGUIShaderDX::Initialize()
     goto error;
   }
 
+  {
+    // GPU texture quads (optional: CGUITexture falls back to the CPU path without it)
+    D3D11_INPUT_ELEMENT_DESC quadLayout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D11_INPUT_PER_VERTEX_DATA, 0},
+    };
+    m_hasQuadPath = m_vertexShaderQuad.Create(guishader_quad_vert, sizeof(guishader_quad_vert),
+                                              quadLayout, ARRAYSIZE(quadLayout));
+    if (!m_hasQuadPath)
+      CLog::LogF(LOGWARNING, "GPU texture quad shader unavailable, using the CPU quad path.");
+  }
+
   for (std::size_t i = 0; i < SHADER_METHOD_RENDER_COUNT; i++)
   {
     // All methods except the font ones with shader clipping share guishader_vert.hlsl
@@ -153,6 +168,7 @@ error:
 
   m_vertexShader.Release();
   m_vertexShaderClip.Release();
+  m_vertexShaderQuad.Release();
 
   return false;
 }
@@ -179,6 +195,30 @@ bool CGUIShaderDX::CreateBuffers()
   }
   // class members have reasonable defaults for the initial buffer load
   m_bIsWVPDirty = true;
+
+  if (m_hasQuadPath)
+  {
+    // quad constants and a shared index buffer for up to MAX_GUI_QUADS quads (0 1 2, 2 3 0 each)
+    CD3D11_BUFFER_DESC quadCbDesc((sizeof(QuadConstants) + 15) & ~15, D3D11_BIND_CONSTANT_BUFFER,
+                                  D3D11_USAGE_DYNAMIC, D3D11_CPU_ACCESS_WRITE);
+    uint16_t indices[MAX_GUI_QUADS * 6];
+    for (unsigned int i = 0; i < MAX_GUI_QUADS; i++)
+    {
+      const uint16_t base = static_cast<uint16_t>(i * 4);
+      const uint16_t pattern[6] = {0, 1, 2, 2, 3, 0};
+      for (unsigned int j = 0; j < 6; j++)
+        indices[i * 6 + j] = base + pattern[j];
+    }
+    CD3D11_BUFFER_DESC quadIbDesc(sizeof(indices), D3D11_BIND_INDEX_BUFFER, D3D11_USAGE_IMMUTABLE);
+    D3D11_SUBRESOURCE_DATA ibData = {indices, 0, 0};
+    if (FAILED(pDevice->CreateBuffer(&quadCbDesc, nullptr, m_pQuadCB.ReleaseAndGetAddressOf())) ||
+        FAILED(pDevice->CreateBuffer(&quadIbDesc, &ibData,
+                                     m_pQuadIndexBuffer.ReleaseAndGetAddressOf())))
+    {
+      CLog::LogF(LOGWARNING, "Failed to create GPU texture quad buffers, using the CPU quad path.");
+      m_hasQuadPath = false;
+    }
+  }
 
   CRect viewPort;
   DX::Windowing()->GetViewPort(viewPort);
@@ -304,6 +344,54 @@ void CGUIShaderDX::DrawQuad(Vertex& v1, Vertex& v2, Vertex& v3, Vertex& v4)
   }
 }
 
+void CGUIShaderDX::DrawGUIQuads(ID3D11Buffer* vertexBuffer,
+                                unsigned int quadCount,
+                                const QuadConstants& constants)
+{
+  if (!HasQuadPath() || !vertexBuffer || quadCount == 0 || quadCount > MAX_GUI_QUADS)
+    return;
+
+  ApplyChanges();
+
+  ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
+  D3D11_MAPPED_SUBRESOURCE res;
+  if (FAILED(pContext->Map(m_pQuadCB.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &res)))
+    return;
+  memcpy(res.pData, &constants, sizeof(constants));
+  pContext->Unmap(m_pQuadCB.Get(), 0);
+
+  m_vertexShaderQuad.BindShader();
+  pContext->VSSetConstantBuffers(2, 1, m_pQuadCB.GetAddressOf());
+  const UINT stride = sizeof(QuadVertex);
+  const UINT offset = 0;
+  pContext->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+  pContext->IASetIndexBuffer(m_pQuadIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+  pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  pContext->DrawIndexed(quadCount * 6, 0, 0);
+
+  // restore what the other GUI draw paths expect
+  m_shaders[m_currentShader].m_vs->BindShader();
+  RestoreBuffers();
+}
+
+void CGUIShaderDX::BeginFrame(bool limitedColorRange)
+{
+  const float blackLevel = limitedColorRange ? 16.f / 255.f : 0.f;
+  const float colorRange = limitedColorRange ? (235.f - 16.f) / 255.f : 1.0f;
+  const int PQ = DX::Windowing()->IsTransferPQ() ? 1 : 0;
+  const float sdrPeakLum =
+      PQ ? 10000.0f / std::max(1.0f, DX::Windowing()->GetGuiSdrPeakLuminance()) : m_sdrPeakLum;
+  if (blackLevel != m_blackLevel || colorRange != m_colorRange || PQ != m_PQ ||
+      sdrPeakLum != m_sdrPeakLum)
+  {
+    m_blackLevel = blackLevel;
+    m_colorRange = colorRange;
+    m_PQ = PQ;
+    m_sdrPeakLum = sdrPeakLum;
+    m_bIsWVPDirty = true;
+  }
+}
+
 void CGUIShaderDX::DrawIndexed(unsigned int indexCount, unsigned int startIndex, unsigned int startVertex)
 {
   if (!m_bCreated)
@@ -332,6 +420,9 @@ void CGUIShaderDX::SetShaderViews(unsigned int numViews, ID3D11ShaderResourceVie
 
 void CGUIShaderDX::Release()
 {
+  m_pQuadCB = nullptr;
+  m_pQuadIndexBuffer = nullptr;
+  m_hasQuadPath = false;
   m_pVertexBuffer = nullptr;
   m_pWVPBuffer = nullptr;
   m_pVPBuffer = nullptr;
@@ -398,12 +489,16 @@ void CGUIShaderDX::SetProjection(const XMMATRIX& value)
 
 void CGUIShaderDX::SetDepth(const float depth)
 {
+  if (depth == m_depth)
+    return;
   m_bIsWVPDirty = true;
   m_depth = depth;
 }
 
 void CGUIShaderDX::SetShaderClip(float x1, float y1, float x2, float y2)
 {
+  if (m_shaderClip.x == x1 && m_shaderClip.y == y1 && m_shaderClip.z == x2 && m_shaderClip.w == y2)
+    return;
   m_bIsWVPDirty = true;
   m_shaderClip.x = x1;
   m_shaderClip.y = y1;
@@ -413,6 +508,9 @@ void CGUIShaderDX::SetShaderClip(float x1, float y1, float x2, float y2)
 
 void CGUIShaderDX::SetTexStep(float stepX, float stepY, float stepX2, float stepY2)
 {
+  if (m_texStep.x == stepX && m_texStep.y == stepY && m_texStep2.x == stepX2 &&
+      m_texStep2.y == stepY2)
+    return;
   m_bIsWVPDirty = true;
   m_texStep.x = stepX;
   m_texStep.y = stepY;
@@ -439,25 +537,19 @@ void CGUIShaderDX::ApplyChanges(void)
     // Vertex shader constants
     buffer->wvp = m_cbWorldViewProj.GetWVP();
 
-    if (m_currentShader == SHADER_METHOD_RENDER_FONT ||
-        m_currentShader == SHADER_METHOD_RENDER_FONT_SHADER_CLIP ||
-        m_currentShader == SHADER_METHOD_RENDER_FONT_RGBA ||
-        m_currentShader == SHADER_METHOD_RENDER_FONT_RGBA_SHADER_CLIP)
-    {
-      buffer->m_shaderClip = m_shaderClip;
-      buffer->m_texStep = m_texStep;
-      buffer->m_texStep2 = m_texStep2;
-    }
+    buffer->m_shaderClip = m_shaderClip;
+    buffer->m_texStep = m_texStep;
+    buffer->m_texStep2 = m_texStep2;
 
     // Translate from GL convention (-1 far 1 near) to D3D (0 far 1 near)
     buffer->depth = m_depth / 2.f + 0.5f;
 
     // Pixel shader constants
-    buffer->blackLevel = (DX::Windowing()->UseLimitedColor() ? 16.f / 255.f : 0.f);
-    buffer->colorRange = (DX::Windowing()->UseLimitedColor() ? (235.f - 16.f) / 255.f : 1.0f);
-    if (DX::Windowing()->IsTransferPQ())
-      buffer->sdrPeakLum = 10000.0f / std::max(1.0f, DX::Windowing()->GetGuiSdrPeakLuminance());
-    buffer->PQ = (DX::Windowing()->IsTransferPQ() ? 1 : 0);
+    // output constants are read once per frame in BeginFrame()
+    buffer->blackLevel = m_blackLevel;
+    buffer->colorRange = m_colorRange;
+    buffer->sdrPeakLum = m_sdrPeakLum;
+    buffer->PQ = m_PQ;
 
     pContext->Unmap(m_pWVPBuffer.Get(), 0);
 

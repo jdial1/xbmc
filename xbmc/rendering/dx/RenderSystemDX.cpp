@@ -331,6 +331,8 @@ bool CRenderSystemDX::BeginRender()
     return false;
 
   m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor();
+  if (m_pGUIShader)
+    m_pGUIShader->BeginFrame(m_limitedColorRange);
   m_inScene = m_deviceResources->Begin();
   return m_inScene;
 }

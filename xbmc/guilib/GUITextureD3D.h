@@ -11,6 +11,11 @@
 #include "GUITexture.h"
 #include "utils/ColorUtils.h"
 
+#include <vector>
+
+#include <d3d11.h>
+#include <wrl/client.h>
+
 class CGUITextureD3D : public CGUITexture
 {
 public:
@@ -34,10 +39,19 @@ protected:
   void Begin(KODI::UTILS::COLOR::Color color);
   void Draw(float *x, float *y, float *z, const CRect &texture, const CRect &diffuse, int orientation);
   void End();
+  bool DrawQuads(const std::vector<Quad>& quads, unsigned int version, const CRect& rect) override;
+  void Free() override;
 
 private:
   CGUITextureD3D(const CGUITextureD3D& texture) = default;
 
+  unsigned int ShaderMethod() const;
+
   KODI::UTILS::COLOR::Color m_col;
+
+  // immutable GPU copy of the quads, rebuilt when their version (or the device) changes; clones share it
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_quadBuffer;
+  unsigned int m_quadBufferVersion{0};
+  unsigned int m_quadCount{0};
 };
 

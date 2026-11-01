@@ -82,6 +82,35 @@ public:
   void SetTexStep(float stepX, float stepY, float stepX2, float stepY2);
 
   void DrawQuad(Vertex& v1, Vertex& v2, Vertex& v3, Vertex& v4);
+
+  //! Constants of guishader_quad_vert.hlsl (cbQuad, b2)
+  struct QuadConstants
+  {
+    DirectX::XMFLOAT4 rect; // x, y, width, height of the texture rectangle
+    DirectX::XMFLOAT4 clip; // x1, y1, x2, y2
+    DirectX::XMFLOAT4 gui[3]; // rows of the GUI (final) transform
+    DirectX::XMFLOAT4 color;
+    DirectX::XMFLOAT2 texSwap;
+    float snap;
+    float pad;
+  };
+  //! Vertex of guishader_quad_vert.hlsl: corner, opposite corner, texture and diffuse coordinates
+  struct QuadVertex
+  {
+    float corner[4];
+    float opposite[4];
+    float texture[4];
+    float diffuse[4];
+  };
+  static constexpr unsigned int MAX_GUI_QUADS = 16;
+  bool HasQuadPath() const { return m_bCreated && m_hasQuadPath; }
+  /*!
+   * \brief Draw quadCount quads (4 QuadVertex each) from an immutable vertex buffer with the current
+   * shader method, views and depth; clipping, GUI transform and pixel snapping run on the GPU.
+   */
+  void DrawGUIQuads(ID3D11Buffer* vertexBuffer, unsigned int quadCount, const QuadConstants& constants);
+  /*! \brief Read the per-frame output constants (limited range, PQ, SDR peak luminance) once. */
+  void BeginFrame(bool limitedColorRange);
   void DrawIndexed(unsigned int indexCount, unsigned int startIndex, unsigned int startVertex);
   void Draw(unsigned int vertexCount, unsigned int startVertex);
 
@@ -169,15 +198,25 @@ private:
   CWorldViewProj m_cbWorldViewProj;
   float m_depth = 1.f;
   // Font vertex shader constants
-  DirectX::XMFLOAT4 m_shaderClip; // clip rect (x1,y1,x2,y2) in font-local coords
-  DirectX::XMFLOAT2 m_texStep; // step (1/resolution) for the input texture 1
-  DirectX::XMFLOAT2 m_texStep2; // step (1/resolution) for the input texture 2
+  DirectX::XMFLOAT4 m_shaderClip{}; // clip rect (x1,y1,x2,y2) in font-local coords
+  DirectX::XMFLOAT2 m_texStep{}; // step (1/resolution) for the input texture 1
+  DirectX::XMFLOAT2 m_texStep2{}; // step (1/resolution) for the input texture 2
 
   bool m_bCreated = false;
   size_t m_currentShader = 0;
 
   CD3DVertexShader m_vertexShader;
   CD3DVertexShader m_vertexShaderClip;
+  CD3DVertexShader m_vertexShaderQuad;
+  bool m_hasQuadPath = false;
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pQuadCB;
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pQuadIndexBuffer;
+
+  // per-frame output constants (BeginFrame)
+  float m_blackLevel = 0.f;
+  float m_colorRange = 1.f;
+  float m_sdrPeakLum = 1.f;
+  int m_PQ = 0;
 
   struct ShaderPair
   {

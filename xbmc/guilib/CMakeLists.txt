@@ -215,6 +215,7 @@ core_add_library(guilib)
 
 if(CORE_SYSTEM_NAME STREQUAL windows OR CORE_SYSTEM_NAME STREQUAL windowsstore)
   set(SHADERS_VERTEX guishader_clip_vert.hlsl
+                     guishader_quad_vert.hlsl
                      guishader_vert.hlsl)
   set(SHADERS_PIXEL guishader_checkerboard_right.hlsl
                     guishader_checkerboard_left.hlsl
