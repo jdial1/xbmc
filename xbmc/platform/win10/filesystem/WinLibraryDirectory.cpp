@@ -20,6 +20,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <winrt/Windows.Storage.FileProperties.h>
 
@@ -107,6 +108,15 @@ bool CWinLibraryDirectory::GetDirectory(const CURL& url, CFileItemList& items)
   URIUtils::AddSlashAtEnd(path); //be sure the dir ends with a slash
 
   auto vectorView = Wait(folder.GetItemsAsync());
+  // request every item's basic properties first and wait afterwards: one broker round trip per item,
+  // run back to back, cost seconds for large folders (USB drives on Xbox)
+  std::vector<winrt::Windows::Foundation::IAsyncOperation<
+      winrt::Windows::Storage::FileProperties::BasicProperties>>
+      propertyRequests;
+  propertyRequests.reserve(vectorView.Size());
+  for (unsigned i = 0; i < vectorView.Size(); i++)
+    propertyRequests.push_back(vectorView.GetAt(i).GetBasicPropertiesAsync());
+
   for (unsigned i = 0; i < vectorView.Size(); i++)
   {
     IStorageItem item = vectorView.GetAt(i);
@@ -128,7 +138,7 @@ bool CWinLibraryDirectory::GetDirectory(const CURL& url, CFileItemList& items)
     if (itemName.front() == '.')
       pItem->SetProperty("file:hidden", true);
 
-    auto props = Wait(item.GetBasicPropertiesAsync());
+    auto props = Wait(propertyRequests[i]);
 
     FILETIME fileTime1 = winrt::clock::to_FILETIME(props.DateModified());
     KODI::TIME::FileTime fileTime2;

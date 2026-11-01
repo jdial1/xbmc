@@ -37,7 +37,7 @@ void CEventScanner::Start()
 void CEventScanner::Stop()
 {
   StopThread(false);
-  m_scanEvent.Set();
+  m_scanEvent.Signal();
   StopThread(true);
 }
 
@@ -82,12 +82,12 @@ void CEventScanner::HandleEvents(bool bWait)
     std::unique_lock lock(m_pollMutex);
 
     m_scanFinishedEvent.Reset();
-    m_scanEvent.Set();
+    m_scanEvent.Signal();
     m_scanFinishedEvent.Wait();
   }
   else
   {
-    m_scanEvent.Set();
+    m_scanEvent.Signal();
   }
 }
 

@@ -14,6 +14,7 @@
 #include "threads/CriticalSection.h"
 #include "threads/Event.h"
 #include "threads/Thread.h"
+#include "threads/WakeSignal.h"
 
 #include <chrono>
 #include <set>
@@ -69,7 +70,7 @@ private:
   // Event parameters
   std::set<void*> m_activeHandles;
   std::set<void*> m_activeLocks;
-  CEvent m_scanEvent;
+  XbmcThreads::CWakeSignal m_scanEvent; //!< high-resolution timeout (the scan interval is 16 ms)
   CEvent m_scanFinishedEvent;
   mutable CCriticalSection m_handleMutex;
   CCriticalSection m_lockMutex;

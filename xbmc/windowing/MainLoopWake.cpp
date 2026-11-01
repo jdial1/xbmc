@@ -45,12 +45,12 @@ bool WaitMainLoop(std::chrono::nanoseconds timeout, bool windowInput)
   return woken;
 }
 
-void CIdleFramePacer::FrameDone(bool rendered, float refreshRate, bool windowInput)
+std::chrono::nanoseconds CIdleFramePacer::NextIdleWait(bool rendered, float refreshRate)
 {
   if (rendered)
   {
     m_idleFrames = 0;
-    return;
+    return std::chrono::nanoseconds::zero();
   }
 
   std::chrono::nanoseconds timeout = IDLE_WAIT;
@@ -58,8 +58,14 @@ void CIdleFramePacer::FrameDone(bool rendered, float refreshRate, bool windowInp
     timeout = std::min(IDLE_WAIT, std::chrono::nanoseconds(static_cast<long long>(1e9 / refreshRate)));
   if (m_idleFrames < ACTIVE_IDLE_FRAMES)
     ++m_idleFrames;
+  return timeout;
+}
 
-  WaitMainLoop(timeout, windowInput);
+void CIdleFramePacer::FrameDone(bool rendered, float refreshRate, bool windowInput)
+{
+  const std::chrono::nanoseconds timeout = NextIdleWait(rendered, refreshRate);
+  if (timeout > std::chrono::nanoseconds::zero())
+    WaitMainLoop(timeout, windowInput);
 }
 
 } // namespace KODI::WINDOWING

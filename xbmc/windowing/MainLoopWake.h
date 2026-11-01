@@ -34,6 +34,8 @@ class CIdleFramePacer
 {
 public:
   void FrameDone(bool rendered, float refreshRate, bool windowInput);
+  /*! \brief How long an idle frame may wait (0 after a rendered frame); FrameDone() waits for this. */
+  std::chrono::nanoseconds NextIdleWait(bool rendered, float refreshRate);
 
 private:
   unsigned int m_idleFrames{0};

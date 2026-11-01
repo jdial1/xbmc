@@ -31,6 +31,8 @@ namespace XFILE
     virtual int64_t GetPosition();
     virtual int64_t GetLength();
     virtual void Flush();
+    //! each Read is a blocking wait on an async read: read in larger chunks than the 64 KB default
+    int GetChunkSize() override { return 256 * 1024; }
 
     virtual bool Delete(const CURL& url);
     virtual bool Rename(const CURL& urlCurrentName, const CURL& urlNewName);

@@ -1350,6 +1350,11 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
       }
     }
 
+#if defined(TARGET_WINDOWS_STORE)
+    // pump window events before input is handled (they were only pumped at the end of FrameMove, so each
+    // CoreWindow event waited one more loop iteration); the pump in DriveRenderLoop then finds nothing
+    CServiceBroker::GetWinSystem()->MessagePump();
+#endif
     m_pMsgHandling->HandleEvents();
     CServiceBroker::GetInputManager().Process(CServiceBroker::GetGUI()->GetWindowManager().GetActiveWindowOrDialog(), frameTime);
 

@@ -50,8 +50,21 @@ void CWinSystemWin10DX::PresentRenderImpl(bool rendered)
     OnDisplayReset();
   }
 
-  // idle frame: wait at most one refresh period (40 ms once the GUI is idle); input wakes it at once
-  m_idlePacer.FrameDone(rendered, GetGfxContext().GetFPS(), false);
+  // idle frame: wait at most one refresh period (40 ms once the GUI is idle); input wakes it at once.
+  // CoreWindow input is only delivered by the dispatcher, so service it in short slices; its handlers
+  // push events (MessagePush/OnEvent), which wake the next slice at once.
+  using namespace std::chrono_literals;
+  std::chrono::nanoseconds wait = m_idlePacer.NextIdleWait(rendered, GetGfxContext().GetFPS());
+  const auto deadline = std::chrono::steady_clock::now() + wait;
+  while (wait > 0ns)
+  {
+    if (KODI::WINDOWING::WaitMainLoop(std::min<std::chrono::nanoseconds>(wait, 4ms), false))
+      break;
+    if (const auto window = winrt::Windows::UI::Core::CoreWindow::GetForCurrentThread())
+      window.Dispatcher().ProcessEvents(
+          winrt::Windows::UI::Core::CoreProcessEventsOption::ProcessAllIfPresent);
+    wait = deadline - std::chrono::steady_clock::now();
+  }
 }
 
 bool CWinSystemWin10DX::CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res)
