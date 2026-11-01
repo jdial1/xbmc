@@ -181,6 +181,8 @@ public:
   };
   //! Batching is on: feature level 9_3 or higher and <gui><batchquads> is not false
   bool HasBatchPath() const { return m_bCreated && m_hasBatchPath && m_batchEnabled; }
+  //! The batched path exists (whatever <gui><batchquads> says)
+  bool CanBatch() const { return m_bCreated && m_hasBatchPath; }
   /*!
    * \brief Queue count quads drawn with the shader method and the views (view1: diffuse texture of the
    * multi-texture methods). Consecutive quads with the same method and views are drawn by one instanced

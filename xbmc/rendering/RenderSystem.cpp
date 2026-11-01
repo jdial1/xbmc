@@ -40,6 +40,8 @@ void CRenderSystemBase::OnAdvancedSettingsLoaded()
   m_showSplashImage = advSettings->m_splashImage;
   m_guiFrontToBackRendering = advSettings->m_guiFrontToBackRendering;
   m_guiBatchQuads = advSettings->m_guiBatchQuads;
+  m_guiAtlasTextures = advSettings->m_guiAtlasTextures;
+  m_guiAtlasMaxSize = static_cast<unsigned int>(advSettings->m_guiAtlasMaxSize);
   m_guiGeometryClear =
       advSettings->m_guiGeometryClear ? ClearFunction::GEOMETRY : ClearFunction::FIXED_FUNCTION;
 }
@@ -153,6 +155,18 @@ bool CRenderSystemBase::GetEnabledGUIBatching()
 {
   std::unique_lock lock(m_settingsSection);
   return m_guiBatchQuads;
+}
+
+bool CRenderSystemBase::GetEnabledAtlasTextures()
+{
+  std::unique_lock lock(m_settingsSection);
+  return m_guiAtlasTextures;
+}
+
+unsigned int CRenderSystemBase::GetAtlasMaxSize()
+{
+  std::unique_lock lock(m_settingsSection);
+  return m_guiAtlasMaxSize;
 }
 
 ClearFunction CRenderSystemBase::GetClearFunction()

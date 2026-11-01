@@ -124,6 +124,12 @@ public:
    */
   virtual bool LoadToGPUOffThread() { return false; }
 
+  /*!
+   * \brief Mark a small skin texture that is never locked or uploaded again: a backend may then
+   * pack it with others into a shared texture (DirectX atlas pages).
+   */
+  void SetAtlasCandidate(bool candidate) { m_atlasCandidate = candidate; }
+
   virtual void CreateTextureObject() = 0;
   virtual void DestroyTextureObject() = 0;
   virtual void LoadToGPU() = 0;
@@ -148,6 +154,8 @@ private:
   CTexture(const CTexture& copy) = delete;
 
 protected:
+  bool m_atlasCandidate{false};
+
   bool LoadFromFileInMem(unsigned char* buffer,
                          size_t size,
                          const std::string& mimeType,

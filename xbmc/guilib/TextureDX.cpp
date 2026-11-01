@@ -68,13 +68,42 @@ DXGI_FORMAT CDXTexture::GetFormat()
 void CDXTexture::DestroyTextureObject()
 {
   m_texture.Release();
+  CTextureAtlasDX::Get().Free(m_atlasRegion);
+}
+
+bool CDXTexture::LoadToAtlas()
+{
+  // the atlas pages are BGRA8 without mipmaps
+  if (m_format != XB_FMT_A8R8G8B8 || IsMipmapped() ||
+      !CTextureAtlasDX::Get().Accepts(m_textureWidth, m_textureHeight))
+    return false;
+
+  m_atlasRegion =
+      CTextureAtlasDX::Get().Insert(m_pixels, GetPitch(), m_textureWidth, m_textureHeight);
+  return static_cast<bool>(m_atlasRegion);
+}
+
+void CDXTexture::CopyFromAtlas()
+{
+  ID3D11Texture2D* page = CTextureAtlasDX::Get().GetTexture(m_atlasRegion);
+  ID3D11DeviceContext* pContext = DX::DeviceResources::Get()->GetD3DContext();
+  if (!page || !pContext ||
+      !m_texture.Create(m_textureWidth, m_textureHeight, 1, D3D11_USAGE_DEFAULT, GetFormat()))
+    return;
+
+  // on the GUI context, in order with the draws that use it
+  const CD3D11_BOX box(m_atlasRegion.x, m_atlasRegion.y, 0, m_atlasRegion.x + m_textureWidth,
+                       m_atlasRegion.y + m_textureHeight, 1);
+  pContext->CopySubresourceRegion(m_texture.Get(), 0, 0, 0, 0, page, 0, &box);
+  CTextureAtlasDX::Get().CountCopy();
 }
 
 bool CDXTexture::LoadToGPUOffThread()
 {
   // only the device path: CreateTexture2D with initial data. Mipmapped textures need the context
   // (UpdateSubresource + GenerateMips) and RGB8 needs a CPU map, so those stay on the GUI thread.
-  if (!m_pixels || m_texture.Get() || m_format == XB_FMT_RGB8 || IsMipmapped())
+  if (!m_pixels || m_texture.Get() || m_format == XB_FMT_RGB8 || IsMipmapped() ||
+      m_atlasCandidate || m_atlasRegion)
     return false;
 
   auto deviceLock = DX::DeviceResources::Get()->TryLockDeviceForWorker();
@@ -100,6 +129,23 @@ void CDXTexture::LoadToGPU()
   if (!m_pixels)
   {
     // nothing to load - probably same image (no change)
+    return;
+  }
+
+  if (m_atlasRegion)
+  {
+    // uploaded again: from now on the texture has a texture of its own
+    CTextureAtlasDX::Get().Free(m_atlasRegion);
+    m_atlasCandidate = false;
+  }
+  else if (m_atlasCandidate && !m_texture.Get() && LoadToAtlas())
+  {
+    if (!m_bCacheMemory)
+    {
+      KODI::MEMORY::AlignedFree(m_pixels);
+      m_pixels = nullptr;
+    }
+    m_loadedToGPU = true;
     return;
   }
 

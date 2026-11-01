@@ -10,6 +10,7 @@
 
 #include "D3DResource.h"
 #include "GUIShaderDX.h"
+#include "TextureAtlasDX.h"
 #include "TextureDX.h"
 #include "ServiceBroker.h"
 #include "rendering/dx/DeviceResources.h"
@@ -17,6 +18,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -166,6 +168,30 @@ std::array<CPoint, 4> TexCoordCorners(const CRect& rect, bool swapXY)
 
   return {{{rect.x1, rect.y1}, {rect.x2, rect.y1}, {rect.x2, rect.y2}, {rect.x1, rect.y2}}};
 }
+
+// grow bounds (x1, y1, x2, y2) by a rectangle in any orientation
+void AddBounds(XMFLOAT4& bounds, const CRect& rect)
+{
+  bounds.x = std::min({bounds.x, rect.x1, rect.x2});
+  bounds.y = std::min({bounds.y, rect.y1, rect.y2});
+  bounds.z = std::max({bounds.z, rect.x1, rect.x2});
+  bounds.w = std::max({bounds.w, rect.y1, rect.y2});
+}
+
+/*!
+ * An atlas texture is sampled from its page if its coordinates stay within [0, 1] plus half a texel:
+ * up to there the gutter samples as the CLAMP sampler of a texture of its own does.
+ */
+bool FitsAtlas(const CDXTexture* texture, const XMFLOAT4& bounds)
+{
+  if (!texture || !texture->IsInAtlas())
+    return false;
+  const CTextureAtlasDX::Region& region = texture->GetAtlasRegion();
+  const float marginU = 0.5f / region.width;
+  const float marginV = 0.5f / region.height;
+  return bounds.x >= -marginU && bounds.y >= -marginV && bounds.z <= 1.0f + marginU &&
+         bounds.w <= 1.0f + marginV;
+}
 } // namespace
 
 void CGUITextureD3D::Free()
@@ -175,6 +201,7 @@ void CGUITextureD3D::Free()
   m_quadCount = 0;
   m_batchQuads.clear();
   m_batchQuadsVersion = 0;
+  m_atlasQuads.clear();
 }
 
 bool CGUITextureD3D::DrawQuads(const std::vector<Quad>& quads,
@@ -282,8 +309,13 @@ bool CGUITextureD3D::QueueQuads(CGUIShaderDX& shader,
   {
     m_batchQuads.clear();
     m_batchQuads.reserve(quads.size());
+    constexpr float inf = std::numeric_limits<float>::infinity();
+    m_batchTextureBounds = {inf, inf, -inf, -inf};
+    m_batchDiffuseBounds = {inf, inf, -inf, -inf};
     for (const Quad& quad : quads)
     {
+      AddBounds(m_batchTextureBounds, quad.texture);
+      AddBounds(m_batchDiffuseBounds, quad.diffuse);
       const CRect& a = quad.anchor;
       const CRect& o = quad.offset;
       const CRect& t = quad.texture;
@@ -317,12 +349,38 @@ bool CGUITextureD3D::QueueQuads(CGUIShaderDX& shader,
   params.depth = m_depth;
 
   CDXTexture* tex = static_cast<CDXTexture*>(m_texture.m_textures[m_currentFrame].get());
-  ID3D11ShaderResourceView* diffuse = nullptr;
-  if (m_diffuse.size())
-    diffuse = static_cast<CDXTexture*>(m_diffuse.m_textures[0].get())->GetShaderResource();
-  return shader.QueueGUIQuads(ShaderMethod(), tex->GetShaderResource(), diffuse,
-                              m_batchQuads.data(), static_cast<unsigned int>(m_batchQuads.size()),
-                              params);
+  CDXTexture* diff =
+      m_diffuse.size() ? static_cast<CDXTexture*>(m_diffuse.m_textures[0].get()) : nullptr;
+
+  // atlas textures are drawn from their page, so that the batch runs on across the textures of
+  // a page; coordinates that leave the texture take the texture's own copy instead
+  const bool texAtlas = FitsAtlas(tex, m_batchTextureBounds);
+  const bool diffAtlas = FitsAtlas(diff, m_batchDiffuseBounds);
+  if ((tex->IsInAtlas() && !texAtlas) || (diff && diff->IsInAtlas() && !diffAtlas))
+    CTextureAtlasDX::Get().CountRangeFallback();
+  const CGUIShaderDX::QuadGeometry* geometry = m_batchQuads.data();
+  if (texAtlas || diffAtlas)
+  {
+    m_atlasQuads = m_batchQuads;
+    for (CGUIShaderDX::QuadGeometry& quad : m_atlasQuads)
+    {
+      if (texAtlas)
+        CTextureAtlasDX::ToPage(tex->GetAtlasRegion(), quad.texture);
+      if (diffAtlas)
+        CTextureAtlasDX::ToPage(diff->GetAtlasRegion(), quad.diffuse);
+    }
+    geometry = m_atlasQuads.data();
+  }
+
+  ID3D11ShaderResourceView* view0 = texAtlas
+                                        ? CTextureAtlasDX::Get().GetView(tex->GetAtlasRegion())
+                                        : tex->GetShaderResource();
+  ID3D11ShaderResourceView* view1 = nullptr;
+  if (diff)
+    view1 = diffAtlas ? CTextureAtlasDX::Get().GetView(diff->GetAtlasRegion())
+                      : diff->GetShaderResource();
+  return shader.QueueGUIQuads(ShaderMethod(), view0, view1, geometry,
+                              static_cast<unsigned int>(m_batchQuads.size()), params);
 }
 
 void CGUITextureD3D::DrawQuad(const CRect& rect,

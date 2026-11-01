@@ -62,5 +62,10 @@ private:
   // the quads in the layout of the batched path, rebuilt when their version changes
   std::vector<CGUIShaderDX::QuadGeometry> m_batchQuads;
   unsigned int m_batchQuadsVersion{0};
+  // bounds (x1, y1, x2, y2) of their texture and diffuse coordinates, and the quads mapped into the
+  // atlas pages of the textures
+  DirectX::XMFLOAT4 m_batchTextureBounds{};
+  DirectX::XMFLOAT4 m_batchDiffuseBounds{};
+  std::vector<CGUIShaderDX::QuadGeometry> m_atlasQuads;
 };
 

@@ -7,6 +7,7 @@
  */
 
 #include "GUIShaderDX.h"
+#include "TextureAtlasDX.h"
 #include "windowing/GraphicContext.h"
 #include "rendering/dx/DeviceResources.h"
 #include "rendering/dx/RenderContext.h"
@@ -471,6 +472,9 @@ void CGUIShaderDX::BeginFrame(bool limitedColorRange, bool batchQuads)
   FlushBatch(BatchFlush::FRAME);
   m_batchEnabled = batchQuads;
   ++m_batchStats.frames;
+  // the command lists of QUARANTINE_FRAMES frames ago, the last ones that could sample a freed
+  // region, have been executed
+  CTextureAtlasDX::Get().BeginFrame();
   const auto now = std::chrono::steady_clock::now();
   if (now - m_batchLogTime >= std::chrono::seconds(10))
   {
@@ -969,14 +973,21 @@ void CGUIShaderDX::LogBatchStats()
   }
   const uint64_t textures = now.textures - last.textures;
   const uint64_t draws = now.draws - last.draws;
+  const uint64_t frames = now.frames - last.frames;
+  const uint64_t otherDraws = now.otherDraws - last.otherDraws;
+  const CTextureAtlasDX::Stats atlas = CTextureAtlasDX::Get().GetStats();
   CLog::Log(LOGDEBUG,
             "GUI quads ({}): {} frames, {} textures, {} quads, {} draws ({:.2f} textures per draw), "
-            "{} other draws, {} flushes, flush reasons:{}",
-            HasBatchPath() ? "batched" : "per texture", now.frames - last.frames, textures,
-            now.quads - last.quads, draws,
-            draws ? static_cast<double>(textures) / static_cast<double>(draws) : 0.0,
-            now.otherDraws - last.otherDraws, now.flushes - last.flushes,
-            reasons.empty() ? " none" : reasons);
+            "{} other draws ({:.1f} draws per frame), {} flushes, flush reasons:{}; atlas: {} pages "
+            "({} MiB, {:.0f}% used), {} regions, {} fallbacks, {} copies, {} range fallbacks",
+            HasBatchPath() ? "batched" : "per texture", frames, textures, now.quads - last.quads,
+            draws, draws ? static_cast<double>(textures) / static_cast<double>(draws) : 0.0,
+            otherDraws,
+            frames ? static_cast<double>(draws + otherDraws) / static_cast<double>(frames) : 0.0,
+            now.flushes - last.flushes, reasons.empty() ? " none" : reasons, atlas.pages,
+            atlas.bytes >> 20,
+            atlas.bytes ? 400.0 * static_cast<double>(atlas.usedTexels) / atlas.bytes : 0.0,
+            atlas.regions, atlas.fallbacks, atlas.copies, atlas.rangeFallbacks);
   m_batchStatsLogged = m_batchStats;
 }
 

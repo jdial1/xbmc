@@ -393,6 +393,8 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     int32_t m_guiAnisotropicFiltering{0};
     bool m_guiFrontToBackRendering{false};
     bool m_guiBatchQuads{true}; //!< batch GUI texture quads into instanced draws (DirectX)
+    bool m_guiAtlasTextures{true}; //!< small skin textures share atlas pages (DirectX, batched)
+    int m_guiAtlasMaxSize{512}; //!< largest side of an atlas texture
     bool m_guiGeometryClear{true};
     bool m_guiAsyncTextureUpload{false};
     bool m_guiVideoLayoutTransparent{false};

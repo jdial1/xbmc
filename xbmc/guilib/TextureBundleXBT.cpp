@@ -238,6 +238,8 @@ std::unique_ptr<CTexture> CTextureBundleXBT::ConvertFrameToTexture(const std::st
 
   // create an xbmc texture
   std::unique_ptr<CTexture> texture = CTexture::CreateTexture();
+  // skin textures are never uploaded again: they may share a texture with others
+  texture->SetAtlasCandidate(true);
 
   if (frame.GetKDFormatType())
   {

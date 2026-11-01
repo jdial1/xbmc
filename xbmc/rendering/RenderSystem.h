@@ -115,6 +115,9 @@ public:
   virtual bool GetEnabledFrontToBackRendering();
   //! <gui><batchquads> (DirectX)
   bool GetEnabledGUIBatching();
+  //! <gui><atlastextures>, <gui><atlasmaxsize>: skin textures in shared pages (DirectX)
+  bool GetEnabledAtlasTextures();
+  unsigned int GetAtlasMaxSize();
   virtual ClearFunction GetClearFunction();
   virtual bool GetShowSplashImage();
 
@@ -142,6 +145,8 @@ protected:
   std::optional<int> m_settingsCallbackHandle;
   bool m_guiFrontToBackRendering{false};
   bool m_guiBatchQuads{true};
+  bool m_guiAtlasTextures{true};
+  unsigned int m_guiAtlasMaxSize{512};
   ClearFunction m_guiGeometryClear{ClearFunction::FIXED_FUNCTION};
   bool m_showSplashImage{true};
 };
