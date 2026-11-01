@@ -12,8 +12,12 @@
 #include "HDRStatus.h"
 #include "guilib/D3DResource.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <shared_mutex>
+#include <thread>
 
 #include <concrt.h>
 #include <dxgi1_6.h>
@@ -47,6 +51,14 @@ namespace DX
     void HandleDeviceLost(bool removed);
     bool Begin();
     void Present();
+    /*!
+     * \brief Shared lock for creating device resources on a worker thread (the device is free-threaded).
+     * Not acquired (owns_lock() false) while the device is being lost/recreated: create on the GUI thread then.
+     */
+    std::shared_lock<std::shared_mutex> TryLockDeviceForWorker()
+    {
+      return std::shared_lock<std::shared_mutex>(m_deviceChangeSection, std::try_to_lock);
+    }
     /*! true when frame pacing uses the swap chain's frame-latency waitable object (UWP) */
     bool HasFrameLatencyWaitable() const { return m_frameLatencyWaitable != nullptr; }
 
@@ -178,6 +190,8 @@ namespace DX
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_d3dContext;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext1> m_deferrContext;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> m_swapChain;
+    std::shared_mutex m_deviceChangeSection; //!< exclusive while the device is lost/recreated/released
+    std::atomic<std::thread::id> m_deviceChangeOwner{}; //!< thread holding m_deviceChangeSection exclusively
     HANDLE m_frameLatencyWaitable{nullptr};
 #ifdef _DEBUG
     Microsoft::WRL::ComPtr<ID3D11Debug> m_d3dDebug;

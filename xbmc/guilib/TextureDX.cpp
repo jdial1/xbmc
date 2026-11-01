@@ -8,6 +8,8 @@
 
 #include "TextureDX.h"
 
+#include "rendering/dx/DeviceResources.h"
+
 #include "utils/MemUtils.h"
 #include "utils/log.h"
 
@@ -66,6 +68,31 @@ DXGI_FORMAT CDXTexture::GetFormat()
 void CDXTexture::DestroyTextureObject()
 {
   m_texture.Release();
+}
+
+bool CDXTexture::LoadToGPUOffThread()
+{
+  // only the device path: CreateTexture2D with initial data. Mipmapped textures need the context
+  // (UpdateSubresource + GenerateMips) and RGB8 needs a CPU map, so those stay on the GUI thread.
+  if (!m_pixels || m_texture.Get() || m_format == XB_FMT_RGB8 || IsMipmapped())
+    return false;
+
+  auto deviceLock = DX::DeviceResources::Get()->TryLockDeviceForWorker();
+  if (!deviceLock.owns_lock() || !DX::DeviceResources::Get()->HasValidDevice())
+    return false;
+
+  m_texture.Create(m_textureWidth, m_textureHeight, 1, D3D11_USAGE_DEFAULT, GetFormat(), m_pixels,
+                   GetPitch());
+  if (m_texture.Get() == nullptr)
+    return false; // the GUI thread will try again (and log)
+
+  if (!m_bCacheMemory)
+  {
+    KODI::MEMORY::AlignedFree(m_pixels);
+    m_pixels = nullptr;
+  }
+  m_loadedToGPU = true;
+  return true;
 }
 
 void CDXTexture::LoadToGPU()

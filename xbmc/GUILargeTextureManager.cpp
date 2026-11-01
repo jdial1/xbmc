@@ -126,7 +126,9 @@ bool CImageLoader::DoWork()
       if (m_mipmap)
         m_texture->SetMipmapping();
 
-      if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
+      // D3D creates the GPU texture here (free-threaded device); GL needs the async upload context
+      if (!m_texture->LoadToGPUOffThread() &&
+          CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
         m_texture->LoadToGPUAsync();
 
       return true;
@@ -149,7 +151,8 @@ bool CImageLoader::DoWork()
   if (m_mipmap)
     m_texture->SetMipmapping();
 
-  if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
+  if (!m_texture->LoadToGPUOffThread() &&
+      CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAsyncTextureUpload)
     m_texture->LoadToGPUAsync();
 
   return true;

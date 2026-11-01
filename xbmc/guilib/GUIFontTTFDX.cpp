@@ -8,6 +8,8 @@
 
 #include "GUIFontTTFDX.h"
 
+#include "rendering/RenderSystem.h"
+
 #include "GUIFontManager.h"
 #include "GUIShaderDX.h"
 #include "TextureDX.h"
@@ -302,6 +304,11 @@ std::unique_ptr<CTexture> CGUIFontTTFDX::ReallocTexture(unsigned int& newHeight)
 {
   assert(newHeight != 0);
   assert(m_textureWidth != 0);
+
+  // grow geometrically (as the GL/GLES font caches do): every reallocation copies the texture and
+  // flushes the vertex caches, so growing one text line at a time is O(lines) reallocations
+  // (the caller has checked newHeight against the max texture size)
+  newHeight = std::min(CTexture::PadPow2(newHeight), m_renderSystem->GetMaxTextureSize());
   if (m_textureHeight == 0)
   {
     m_texture.reset();
@@ -323,6 +330,15 @@ std::unique_ptr<CTexture> CGUIFontTTFDX::ReallocTexture(unsigned int& newHeight)
   if (!pContext)
     return nullptr;
 
+  // Clear the new texture on the GPU (white, alpha 0, like ClearTexturePixels), then copy the old
+  // glyphs over it; fall back to a CPU fill if the format can't be a render target
+  ID3D11RenderTargetView* clearTarget = newSpeedupTexture->GetRenderTarget();
+  if (clearTarget)
+  {
+    const float clearColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+    pContext->ClearRenderTargetView(clearTarget, clearColor);
+  }
+
   // There might be data to copy from the previous texture
   if (m_speedupTexture)
   {
@@ -331,9 +347,8 @@ std::unique_ptr<CTexture> CGUIFontTTFDX::ReallocTexture(unsigned int& newHeight)
                                     0, &rect);
   }
 
-  // Clear the previously unused part of the resource
-  //! @todo avoid the CPU/GPU synchronization with a GPU clear
-  if (newHeight > m_textureHeight)
+  // Clear the previously unused part of the resource (CPU fallback)
+  if (!clearTarget && newHeight > m_textureHeight)
   {
     const unsigned int startRow = m_speedupTexture ? m_textureHeight : 0;
     CD3D11_BOX rect(0, startRow, 0, m_textureWidth, newHeight, 1);

@@ -117,6 +117,13 @@ public:
    */
   void LoadToGPUAsync();
 
+  /*!
+   * \brief Create the GPU texture on the calling (worker) thread if the backend can do that without a
+   * graphics context. Default: not supported.
+   * \return true if the texture is now on the GPU
+   */
+  virtual bool LoadToGPUOffThread() { return false; }
+
   virtual void CreateTextureObject() = 0;
   virtual void DestroyTextureObject() = 0;
   virtual void LoadToGPU() = 0;

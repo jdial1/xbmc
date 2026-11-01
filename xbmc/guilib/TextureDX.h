@@ -23,6 +23,7 @@ public:
   void CreateTextureObject();
   void DestroyTextureObject();
   virtual void LoadToGPU();
+  bool LoadToGPUOffThread() override;
   void BindToUnit(unsigned int unit);
 
   ID3D11Texture2D* GetTextureObject()

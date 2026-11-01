@@ -38,6 +38,34 @@ extern "C"
 #endif // _DEBUG
 
 using namespace DirectX;
+
+namespace
+{
+// Exclusive device-change lock. HandleDeviceLost() can re-enter itself through ResizeBuffers(), so only
+// the outermost call on a thread takes the lock.
+class DeviceChangeLock
+{
+public:
+  DeviceChangeLock(std::shared_mutex& section, std::atomic<std::thread::id>& owner)
+    : m_lock(section, std::defer_lock), m_owner(owner)
+  {
+    if (m_owner.load() != std::this_thread::get_id())
+    {
+      m_lock.lock();
+      m_owner = std::this_thread::get_id();
+    }
+  }
+  ~DeviceChangeLock()
+  {
+    if (m_lock.owns_lock())
+      m_owner = std::thread::id();
+  }
+
+private:
+  std::unique_lock<std::shared_mutex> m_lock;
+  std::atomic<std::thread::id>& m_owner;
+};
+} // namespace
 using namespace Microsoft::WRL;
 using namespace Concurrency;
 namespace winrt
@@ -101,6 +129,8 @@ void DX::DeviceResources::Release()
 {
   if (!m_bDeviceCreated)
     return;
+
+  DeviceChangeLock deviceChangeLock(m_deviceChangeSection, m_deviceChangeOwner);
 
   ReleaseBackBuffer();
   OnDeviceLost(true);
@@ -969,6 +999,9 @@ void DX::DeviceResources::OnDeviceRestored()
 // Recreate all device resources and set them back to the current state.
 void DX::DeviceResources::HandleDeviceLost(bool removed)
 {
+  // wait for worker threads that are creating resources on the old device, keep new ones out
+  DeviceChangeLock deviceChangeLock(m_deviceChangeSection, m_deviceChangeOwner);
+
   bool backbuferExists = m_backBufferTex.Get() != nullptr;
 
   OnDeviceLost(removed);
