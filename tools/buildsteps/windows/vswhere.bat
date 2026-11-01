@@ -25,7 +25,7 @@ SET vsver=
 
 SET vswhere="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 
-SET "args=-latest -property installationPath"
+SET "args=-latest -products * -property installationPath"
 IF "%prerelease%"=="true" SET "args=%args% -prerelease"
 
 FOR /f "usebackq tokens=1* delims=" %%i in (`%vswhere% %args%`) do (
