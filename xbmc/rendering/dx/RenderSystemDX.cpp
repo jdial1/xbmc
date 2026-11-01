@@ -362,7 +362,8 @@ bool CRenderSystemDX::BeginRender()
 
   m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor();
   if (m_pGUIShader)
-    m_pGUIShader->BeginFrame(m_limitedColorRange, GetEnabledGUIBatching());
+    m_pGUIShader->BeginFrame(m_limitedColorRange, GetEnabledGUIBatching(),
+                             GetEnabledTextBatching());
   m_inScene = m_deviceResources->Begin();
   if (m_inScene && m_splashTarget && BeginGuiTarget(true))
   {

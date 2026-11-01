@@ -395,6 +395,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_guiBatchQuads{true}; //!< batch GUI texture quads into instanced draws (DirectX)
     bool m_guiAtlasTextures{true}; //!< small skin textures share atlas pages (DirectX, batched)
     int m_guiAtlasMaxSize{512}; //!< largest side of an atlas texture
+    bool m_guiBatchText{true}; //!< text joins the batched GUI quads (DirectX, batched)
     bool m_guiGeometryClear{true};
     bool m_guiAsyncTextureUpload{false};
     bool m_guiVideoLayoutTransparent{false};

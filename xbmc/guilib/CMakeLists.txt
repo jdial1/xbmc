@@ -230,6 +230,7 @@ if(CORE_SYSTEM_NAME STREQUAL windows OR CORE_SYSTEM_NAME STREQUAL windowsstore)
                     guishader_multi_texture_blend.hlsl
                     guishader_multi_texture_blend_nearest.hlsl
                     guishader_texture.hlsl
+                    guishader_texture_batch.hlsl
                     guishader_texture_nearest.hlsl
                     guishader_texture_noblend.hlsl)
   foreach(shader ${SHADERS_VERTEX})

@@ -27,6 +27,7 @@
 #include "guishader_quad_batch_vert.h"
 #include "guishader_quad_vert.h"
 #include "guishader_texture.h"
+#include "guishader_texture_batch.h"
 #include "guishader_texture_nearest.h"
 #include "guishader_texture_noblend.h"
 #include "guishader_vert.h"
@@ -190,6 +191,13 @@ bool CGUIShaderDX::Initialize()
                  static_cast<unsigned int>(featureLevel));
   }
 
+  // batched text: images and glyphs share the mixed pixel shader
+  m_hasTextBatchPath =
+      m_hasBatchPath &&
+      m_pixelShaderBatch.Create(guishader_texture_batch, sizeof(guishader_texture_batch));
+  if (m_hasBatchPath && !m_hasTextBatchPath)
+    CLog::LogF(LOGWARNING, "Batched GUI text unavailable, fonts draw their own vertex buffers.");
+
   for (std::size_t i = 0; i < SHADER_METHOD_RENDER_COUNT; i++)
   {
     // All methods except the font ones with shader clipping share guishader_vert.hlsl
@@ -221,6 +229,7 @@ error:
   m_vertexShaderClip.Release();
   m_vertexShaderQuad.Release();
   m_vertexShaderBatch.Release();
+  m_pixelShaderBatch.Release();
 
   return false;
 }
@@ -467,10 +476,11 @@ void CGUIShaderDX::DrawGUIQuads(ID3D11Buffer* vertexBuffer,
   RestoreInputAssembler();
 }
 
-void CGUIShaderDX::BeginFrame(bool limitedColorRange, bool batchQuads)
+void CGUIShaderDX::BeginFrame(bool limitedColorRange, bool batchQuads, bool batchText)
 {
   FlushBatch(BatchFlush::FRAME);
   m_batchEnabled = batchQuads;
+  m_textBatchEnabled = batchText;
   ++m_batchStats.frames;
   // the command lists of QUARANTINE_FRAMES frames ago, the last ones that could sample a freed
   // region, have been executed
@@ -542,6 +552,7 @@ void CGUIShaderDX::Release()
   m_pBatchIndexBuffer = nullptr;
   m_pBatchInstanceBuffer = nullptr;
   m_hasBatchPath = false;
+  m_hasTextBatchPath = false;
   m_pQuadCB = nullptr;
   m_pQuadIndexBuffer = nullptr;
   m_hasQuadPath = false;
@@ -799,21 +810,10 @@ bool CGUIShaderDX::QueueGUIQuads(unsigned int method,
       method >= SHADER_METHOD_RENDER_COUNT)
     return false;
 
-  // a run goes on while the method and the views stay; nothing is reordered
-  if (!m_batch.empty() && (method != m_batchMethod || view0 != m_batchViews[0].Get() ||
-                           view1 != m_batchViews[1].Get()))
-    FlushBatch(BatchFlush::TEXTURE);
-  else if (m_batch.size() + count > BATCH_CAPACITY)
-    FlushBatch(BatchFlush::FULL);
-
-  if (m_batch.empty())
-  {
-    m_batchMethod = method;
-    m_batchViews[0] = view0;
-    m_batchViews[1] = view1;
-    if constexpr (VALIDATE_BATCHES)
-      GetBatchState(m_batchState);
-  }
+  // texture blend images share their runs with text (QueueGlyphs)
+  if (method == SHADER_METHOD_RENDER_TEXTURE_BLEND && HasTextBatchPath())
+    method = METHOD_MIXED;
+  OpenRun(method, view0, view1, count);
 
   QuadInstance instance;
   instance.params = params;
@@ -830,6 +830,81 @@ bool CGUIShaderDX::QueueGUIQuads(unsigned int method,
   m_batchStats.quads += count;
   ++CRenderSystemBase::m_GUIElementCount;
   return true;
+}
+
+bool CGUIShaderDX::QueueGlyphs(ID3D11ShaderResourceView* view,
+                               const GlyphQuad* glyphs,
+                               unsigned int count,
+                               const GlyphParams& params)
+{
+  if (!HasTextBatchPath() || !view || !glyphs || count == 0 || m_cbViewPort.Width <= 0.f ||
+      m_cbViewPort.Height <= 0.f)
+    return false;
+
+  OpenRun(METHOD_MIXED, nullptr, view, count);
+
+  QuadInstance instance = {};
+  // z and w of the corners (see guishader_quad_batch_vert.hlsl)
+  instance.geometry.offset = {0.0f, 1.0f, 0.0f, 0.0f};
+  // the scissor rectangle in clip space: the pixel shader keeps the pixels whose centres lie inside
+  const float left = (params.clip.x - m_cbViewPort.TopLeftX) / m_cbViewPort.Width * 2.0f - 1.0f;
+  const float right = (params.clip.z - m_cbViewPort.TopLeftX) / m_cbViewPort.Width * 2.0f - 1.0f;
+  const float top = 1.0f - (params.clip.y - m_cbViewPort.TopLeftY) / m_cbViewPort.Height * 2.0f;
+  const float bottom = 1.0f - (params.clip.w - m_cbViewPort.TopLeftY) / m_cbViewPort.Height * 2.0f;
+  instance.geometry.diffuse = {left, right, top, bottom};
+  instance.params.rect = {params.wvp._11, params.wvp._12, params.wvp._13, params.wvp._14};
+  instance.params.clip = {params.wvp._21, params.wvp._22, params.wvp._23, params.wvp._24};
+  instance.params.gui[0] = {params.wvp._31, params.wvp._32, params.wvp._33, params.wvp._34};
+  instance.params.gui[1] = {params.wvp._41, params.wvp._42, params.wvp._43, params.wvp._44};
+  instance.params.snap = 0.0f; // glyph
+  // as ApplyChanges() converts the depth for cbWorld, which the font's own draw uses
+  instance.params.depth = params.depth / 2.f + 0.5f;
+  for (unsigned int i = 0; i < count; i++)
+  {
+    instance.geometry.anchor = glyphs[i].rect;
+    instance.geometry.texture = glyphs[i].texture;
+    instance.params.color = glyphs[i].color;
+    m_batch.push_back(instance);
+  }
+
+  ++m_batchStats.textRuns;
+  m_batchStats.glyphs += count;
+  ++CRenderSystemBase::m_GUIElementCount;
+  return true;
+}
+
+void CGUIShaderDX::OpenRun(unsigned int method,
+                           ID3D11ShaderResourceView* view0,
+                           ID3D11ShaderResourceView* view1,
+                           size_t count)
+{
+  // A run goes on while the method and the views stay; nothing is reordered. A mixed run takes its
+  // image view from its first image and its glyph view from its first text.
+  const bool mixed = method == METHOD_MIXED;
+  const auto joins = [mixed](const ComPtr<ID3D11ShaderResourceView>& held,
+                             ID3D11ShaderResourceView* view)
+  { return held.Get() == view || (mixed && (!held || !view)); };
+  if (!m_batch.empty() && (method != m_batchMethod || !joins(m_batchViews[0], view0) ||
+                           !joins(m_batchViews[1], view1)))
+    FlushBatch(BatchFlush::TEXTURE);
+  else if (m_batch.size() + count > BATCH_CAPACITY)
+    FlushBatch(BatchFlush::FULL);
+
+  if (m_batch.empty())
+  {
+    m_batchMethod = method;
+    m_batchViews[0] = view0;
+    m_batchViews[1] = view1;
+    if constexpr (VALIDATE_BATCHES)
+      GetBatchState(m_batchState);
+  }
+  else if (mixed)
+  {
+    if (!m_batchViews[0])
+      m_batchViews[0] = view0;
+    if (!m_batchViews[1])
+      m_batchViews[1] = view1;
+  }
 }
 
 void CGUIShaderDX::FlushBatch(BatchFlush reason)
@@ -863,16 +938,19 @@ void CGUIShaderDX::FlushBatch(BatchFlush reason)
   ApplyChanges();
 
   m_vertexShaderBatch.BindShader();
-  if (m_currentShader != m_batchMethod)
-  {
-    m_currentShader = m_batchMethod;
-    m_shaders[m_currentShader].m_ps.BindShader();
-  }
-  // the multi-texture methods read the diffuse texture from t1
-  const bool diffuse = m_batchMethod == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND ||
-                       m_batchMethod == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND_NEAREST;
+  // a mixed run with glyphs takes the mixed pixel shader, one without them guishader_texture.hlsl;
+  // the multi-texture methods read the diffuse texture from t1, the mixed one the glyph cache
+  const bool glyphs = m_batchMethod == METHOD_MIXED && m_batchViews[1];
+  const unsigned int method =
+      m_batchMethod == METHOD_MIXED ? SHADER_METHOD_RENDER_TEXTURE_BLEND : m_batchMethod;
+  if (glyphs)
+    m_pixelShaderBatch.BindShader();
+  else
+    m_shaders[method].m_ps.BindShader();
+  const bool twoViews = glyphs || method == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND ||
+                        method == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND_NEAREST;
   ID3D11ShaderResourceView* views[] = {m_batchViews[0].Get(), m_batchViews[1].Get()};
-  pContext->PSSetShaderResources(0, diffuse ? 2 : 1, views);
+  pContext->PSSetShaderResources(0, twoViews ? 2 : 1, views);
   pContext->IASetIndexBuffer(m_pBatchIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
   pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -924,8 +1002,9 @@ void CGUIShaderDX::FlushBatch(BatchFlush reason)
   m_batchViews[0] = nullptr;
   m_batchViews[1] = nullptr;
 
-  // restore what the other GUI draw paths expect
+  // restore what the other GUI draw paths expect: the shaders of the method Begin() set last
   m_shaders[m_currentShader].m_vs->BindShader();
+  m_shaders[m_currentShader].m_ps.BindShader();
   RestoreInputAssembler();
 }
 
@@ -972,16 +1051,20 @@ void CGUIShaderDX::LogBatchStats()
                                      now.reasons[i] - last.reasons[i]);
   }
   const uint64_t textures = now.textures - last.textures;
+  const uint64_t textRuns = now.textRuns - last.textRuns;
   const uint64_t draws = now.draws - last.draws;
   const uint64_t frames = now.frames - last.frames;
   const uint64_t otherDraws = now.otherDraws - last.otherDraws;
   const CTextureAtlasDX::Stats atlas = CTextureAtlasDX::Get().GetStats();
   CLog::Log(LOGDEBUG,
-            "GUI quads ({}): {} frames, {} textures, {} quads, {} draws ({:.2f} textures per draw), "
+            "GUI quads ({}{}): {} frames, {} textures, {} quads, {} text runs, {} glyphs, {} draws "
+            "({:.2f} textures per draw, {:.2f} with text runs), "
             "{} other draws ({:.1f} draws per frame), {} flushes, flush reasons:{}; atlas: {} pages "
             "({} MiB, {:.0f}% used), {} regions, {} fallbacks, {} copies, {} range fallbacks",
-            HasBatchPath() ? "batched" : "per texture", frames, textures, now.quads - last.quads,
-            draws, draws ? static_cast<double>(textures) / static_cast<double>(draws) : 0.0,
+            HasBatchPath() ? "batched" : "per texture", HasTextBatchPath() ? ", text" : "", frames,
+            textures, now.quads - last.quads, textRuns, now.glyphs - last.glyphs, draws,
+            draws ? static_cast<double>(textures) / static_cast<double>(draws) : 0.0,
+            draws ? static_cast<double>(textures + textRuns) / static_cast<double>(draws) : 0.0,
             otherDraws,
             frames ? static_cast<double>(draws + otherDraws) / static_cast<double>(frames) : 0.0,
             now.flushes - last.flushes, reasons.empty() ? " none" : reasons, atlas.pages,
@@ -996,7 +1079,7 @@ const char* CGUIShaderDX::GetBatchFlushName(BatchFlush reason)
   static constexpr std::array<const char*, static_cast<size_t>(BatchFlush::COUNT)> names = {
       "texture", "full", "begin", "views", "depth", "matrix", "clip", "viewport", "draw",
       "stateblock", "blend", "scissor", "depthculling", "target", "clear", "stereo", "present",
-      "external", "commandlist", "frame"};
+      "external", "commandlist", "frame", "glyphcache"};
   static_assert(names.back() != nullptr, "every flush reason needs a name");
   const auto index = static_cast<size_t>(reason);
   return index < names.size() ? names[index] : "?";

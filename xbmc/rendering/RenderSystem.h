@@ -118,6 +118,8 @@ public:
   //! <gui><atlastextures>, <gui><atlasmaxsize>: skin textures in shared pages (DirectX)
   bool GetEnabledAtlasTextures();
   unsigned int GetAtlasMaxSize();
+  //! <gui><batchtext>: text in the GUI batch as well (DirectX)
+  bool GetEnabledTextBatching();
   virtual ClearFunction GetClearFunction();
   virtual bool GetShowSplashImage();
 
@@ -147,6 +149,7 @@ protected:
   bool m_guiBatchQuads{true};
   bool m_guiAtlasTextures{true};
   unsigned int m_guiAtlasMaxSize{512};
+  bool m_guiBatchText{true};
   ClearFunction m_guiGeometryClear{ClearFunction::FIXED_FUNCTION};
   bool m_showSplashImage{true};
 };

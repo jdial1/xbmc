@@ -29,17 +29,55 @@ struct VS_BATCH_INPUT
   float4 flags : TEXCOORD10;   // texSwap.xy, snap (1 = whole pixels, 2 = subpixel), depth (0 far, 1 near)
 };
 
+// Glyph instances (CGUIShaderDX::QueueGlyphs) have snap 0 and carry their own fields:
+//   anchor     the glyph rectangle in font-local coordinates
+//   offset.xy  z and w of its corners, 0 and 1 (from the instance, so that the corners take the same
+//              dp4 as the vertices of the font's own draw)
+//   tex        its texture rectangle in the glyph cache
+//   diffuse    the clip rectangle in clip space (left, right, top, bottom), for the pixel shader
+//   quadRect, quadClip, guiRow0, guiRow1: rows of the text's transposed world-view-projection matrix
+//              (as cbWorld holds it when the font draws the text itself)
+
+// PS_INPUT plus what guishader_texture_batch.hlsl reads; the other pixel shaders read PS_INPUT only
+struct VS_BATCH_OUTPUT
+{
+  float4 pos : SV_POSITION;
+  float4 color : COLOR0;
+  float2 tex : TEXCOORD0;
+  float2 tex2 : TEXCOORD1;
+  float4 clipDist : TEXCOORD2; // all >= 0 inside the clip rectangle of a glyph
+  float glyph : TEXCOORD3; // 1: the texture is the glyph cache (t1), 0: the image (t0)
+};
+
 // the x1/y1 (select 0) or x2/y2 (select 1) components of r
 float2 Edges(float4 r, float2 select)
 {
   return float2(select.x > 0.5 ? r.z : r.x, select.y > 0.5 ? r.w : r.y);
 }
 
-PS_INPUT VS(VS_BATCH_INPUT input)
+VS_BATCH_OUTPUT VS(VS_BATCH_INPUT input)
 {
-  PS_INPUT output = (PS_INPUT)0;
+  VS_BATCH_OUTPUT output = (VS_BATCH_OUTPUT)0;
 
   float2 s = input.corner;
+  if (input.flags.z < 0.5)
+  {
+    // a glyph: the corner through the text's matrix exactly as guishader_vert.hlsl transforms the
+    // font's vertex; the pixel shader clips to the rectangle that was the scissor rectangle
+    float4 corner = float4(Edges(input.anchor, s), input.offset.xy);
+    output.pos = float4(dot(corner, input.quadRect), dot(corner, input.quadClip),
+                        dot(corner, input.guiRow0), dot(corner, input.guiRow1));
+    output.pos.z = input.flags.w * output.pos.w;
+    output.color = input.quadColor;
+    output.tex = Edges(input.tex, s);
+    output.clipDist = float4(output.pos.x - input.diffuse.x * output.pos.w,
+                             input.diffuse.y * output.pos.w - output.pos.x,
+                             input.diffuse.z * output.pos.w - output.pos.y,
+                             output.pos.y - input.diffuse.w * output.pos.w);
+    output.glyph = 1.0;
+    return output;
+  }
+
   float2 o = 1.0 - s;
   // swapped texture coordinates run along the other axis (TexCoordCorners in GUITextureD3D.cpp)
   float2 texSelect = input.flags.x > 0.0 ? s.yx : s;
@@ -77,5 +115,7 @@ PS_INPUT VS(VS_BATCH_INPUT input)
   // the control depth, as the cbWorld depth of the per-texture path (depth testing and focus rely on it)
   output.pos.z = input.flags.w * output.pos.w;
   output.color = input.quadColor;
+  // images are not clipped in the pixel shader
+  output.clipDist = float4(1.0, 1.0, 1.0, 1.0);
   return output;
 }

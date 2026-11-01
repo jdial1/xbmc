@@ -15,6 +15,7 @@
 
 #include "D3DResource.h"
 #include "GUIFontTTF.h"
+#include "GUIShaderDX.h"
 #include "threads/CriticalSection.h"
 
 #include <atomic>
@@ -56,12 +57,26 @@ protected:
   void DeleteHardwareTexture() override;
 
 private:
-  static void AddReference(CGUIFontTTFDX* font, CD3DBuffer* pBuffer);
-  static void ClearReference(CGUIFontTTFDX* font, CD3DBuffer* pBuffer);
+  /*!
+   * A text's vertices (CVertexBuffer::bufferHandle). Batched text (CGUIShaderDX::QueueGlyphs) uses
+   * the glyph quads; the vertex buffer of the font's own draw is created when that draws the text.
+   */
+  struct CTextVertices
+  {
+    std::vector<CGUIShaderDX::GlyphQuad> glyphs; // empty if the text is not batched
+    std::vector<SVertex> vertices; // until the buffer exists
+    std::unique_ptr<CD3DBuffer> buffer;
+  };
+
+  static void AddReference(CGUIFontTTFDX* font, CTextVertices* text);
+  static void ClearReference(CGUIFontTTFDX* font, CTextVertices* text);
+  static const CD3DBuffer* GetBuffer(CTextVertices& text);
+  bool QueueText(CGUIShaderDX& shader, CGraphicContext& context);
 
   std::unique_ptr<CD3DTexture> m_speedupTexture; // extra texture to speed up reallocations
-  std::list<CD3DBuffer*> m_buffers;
+  std::list<CTextVertices*> m_buffers;
   bool m_scissorClip{false};
+  bool m_batchText{false}; // the texts of this Begin/End block join the GUI batch
 
   static CCriticalSection m_staticIndexBufferSection;
   static std::atomic<bool> m_staticIndexBufferCreated;

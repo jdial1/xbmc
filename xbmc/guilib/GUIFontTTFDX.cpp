@@ -15,9 +15,12 @@
 #include "TextureDX.h"
 #include "rendering/dx/DeviceResources.h"
 #include "rendering/dx/RenderContext.h"
+#include "utils/MathUtils.h"
 #include "utils/log.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <limits>
 
 // stuff for freetype
@@ -35,6 +38,17 @@ using namespace Microsoft::WRL;
 namespace
 {
 constexpr size_t ELEMENT_ARRAY_MAX_CHAR_INDEX = 2000;
+
+//! RenderCharacter writes each glyph as a rectangle of one colour, corners x1 y1, x2 y1, x2 y2, x1 y2
+bool IsGlyphQuad(const SVertex* v)
+{
+  const auto sameColor = [v](int i)
+  { return std::memcmp(&v[i].col, &v[0].col, sizeof(v[0].col)) == 0; };
+  return v[1].x == v[2].x && v[3].x == v[0].x && v[1].y == v[0].y && v[3].y == v[2].y &&
+         v[1].u == v[2].u && v[3].u == v[0].u && v[1].v == v[0].v && v[3].v == v[2].v &&
+         v[0].z == 0 && v[1].z == 0 && v[2].z == 0 && v[3].z == 0 && sameColor(1) && sameColor(2) &&
+         sameColor(3);
+}
 } /* namespace */
 
 CGUIFontTTF* CGUIFontTTF::CreateGUIFontTTF(const std::string& fontIdent)
@@ -60,6 +74,20 @@ bool CGUIFontTTFDX::FirstBegin()
   CGUIShaderDX* pGUIShader = DX::Windowing()->GetGUIShader();
   if (pGUIShader == nullptr)
     return false;
+
+  // Batched text sets no shader method, which would end the GUI batch: only the clipping information
+  // is recalculated. It needs scissor clipping, which the batch's pixel shader does instead.
+  m_batchText = false;
+  if (pGUIShader->HasTextBatchPath())
+  {
+    pGUIShader->UpdateClipParams();
+    if (DX::Windowing()->ScissorsCanEffectClipping())
+    {
+      m_batchText = true;
+      m_scissorClip = true;
+      return true;
+    }
+  }
 
   // Set a shader first to trigger the internal clipping recalculations. The cached clipping data
   // contains stale information from the previous draw otherwise.
@@ -97,13 +125,22 @@ void CGUIFontTTFDX::LastEnd()
                   [](trans& _) { return _.m_vertexBuffer->size <= 0; }))
     return;
 
-  CreateStaticIndexBuffer();
-  if (m_staticIndexBuffer == nullptr)
-    return;
-
   CGUIShaderDX* pGUIShader = DX::Windowing()->GetGUIShader();
 
   if (pGUIShader == nullptr)
+    return;
+
+  // batched: the texts join the GUI batch; if it cannot take them the font draws them itself, with
+  // the shader method FirstBegin() did not set
+  if (m_batchText)
+  {
+    if (QueueText(*pGUIShader, winSystem->GetGfxContext()))
+      return;
+    pGUIShader->Begin(SHADER_METHOD_RENDER_FONT_RGBA);
+  }
+
+  CreateStaticIndexBuffer();
+  if (m_staticIndexBuffer == nullptr)
     return;
 
   pGUIShader->SetDepth(CServiceBroker::GetWinSystem()->GetGfxContext().GetTransformDepth());
@@ -131,8 +168,9 @@ void CGUIFontTTFDX::LastEnd()
     if (m_vertexTrans[i].m_vertexBuffer->size == 0)
       continue;
 
-    const CD3DBuffer* vBuffer =
-        reinterpret_cast<const CD3DBuffer*>(m_vertexTrans[i].m_vertexBuffer->bufferHandle);
+    CTextVertices* text =
+        static_cast<CTextVertices*>(m_vertexTrans[i].m_vertexBuffer->bufferHandle);
+    const CD3DBuffer* vBuffer = text ? GetBuffer(*text) : nullptr;
     if (vBuffer == nullptr)
       continue;
 
@@ -252,50 +290,148 @@ void CGUIFontTTFDX::LastEnd()
   pGUIShader->RestoreBuffers();
 }
 
-CVertexBuffer CGUIFontTTFDX::CreateVertexBuffer(const std::vector<SVertex>& vertices) const
+bool CGUIFontTTFDX::QueueText(CGUIShaderDX& shader, CGraphicContext& context)
 {
-  CD3DBuffer* buffer = nullptr;
-  // do not create empty buffers, leave buffer as nullptr, it will be ignored on drawing stage
-  if (!vertices.empty())
+  // all or nothing: a text the batch cannot take sends the whole block to the font's own draw
+  if (!shader.HasTextBatchPath() ||
+      !std::ranges::all_of(m_vertexTrans,
+                           [](const CTranslatedVertices& trans)
+                           {
+                             const auto* text = static_cast<const CTextVertices*>(
+                                 trans.m_vertexBuffer->bufferHandle);
+                             return trans.m_vertexBuffer->size == 0 || !text ||
+                                    text->glyphs.size() == trans.m_vertexBuffer->size;
+                           }))
+    return false;
+
+  if (m_speedupTexture == nullptr)
+    return true;
+  ID3D11ShaderResourceView* view = m_speedupTexture->GetShaderResource();
+  if (view == nullptr)
+    return true;
+
+  DX::Windowing()->SetAlphaBlendEnable(true);
+
+  // the scissors LastEnd() sets for each text become the clip rectangles of their glyphs
+  const CRect scissor = context.StereoCorrection(context.GetScissors());
+  CGUIShaderDX::GlyphParams params;
+  params.depth = context.GetTransformDepth();
+  const XMMATRIX world = shader.GetWorld();
+  for (const CTranslatedVertices& trans : m_vertexTrans)
   {
-    buffer = new CD3DBuffer();
-    if (!buffer->Create(D3D11_BIND_VERTEX_BUFFER, vertices.size(), sizeof(SVertex),
-                        DXGI_FORMAT_UNKNOWN, D3D11_USAGE_IMMUTABLE, &vertices[0]))
-    {
-      CLog::LogF(LOGERROR, "Failed to create vertex buffer.");
-      delete buffer;
-      buffer = nullptr;
-    }
-    else
-    {
-      AddReference((CGUIFontTTFDX*)this, buffer);
-    }
+    const auto* text = static_cast<const CTextVertices*>(trans.m_vertexBuffer->bufferHandle);
+    if (trans.m_vertexBuffer->size == 0 || !text)
+      continue;
+
+    CRect clip = DX::Windowing()->ClipRectToScissorRect(trans.m_clip);
+    clip.Intersect(scissor);
+    if (clip.IsEmpty())
+      continue;
+    // rounded as SetScissors rounds
+    params.clip = {static_cast<float>(MathUtils::round_int(clip.x1)),
+                   static_cast<float>(MathUtils::round_int(clip.y1)),
+                   static_cast<float>(MathUtils::round_int(clip.x2)),
+                   static_cast<float>(MathUtils::round_int(clip.y2))};
+
+    // the matrix of LastEnd(), see there
+    float fractX = context.ScaleFinalXCoord(trans.m_translateX, trans.m_translateY);
+    float fractY = context.ScaleFinalYCoord(trans.m_translateX, trans.m_translateY);
+    fractX = -fractX + std::round(fractX);
+    fractY = -fractY + std::round(fractY);
+
+    const XMMATRIX correction = XMMatrixTranslation(fractX, fractY, 0.0f);
+    const XMMATRIX scale = XMMatrixScaling(context.GetGUIScaleX(), context.GetGUIScaleY(), 1.0f);
+    const XMMATRIX translation = XMMatrixTranslation(trans.m_translateX, trans.m_translateY, 0.0f);
+    const XMMATRIX offset = XMMatrixTranslation(trans.m_offsetX, trans.m_offsetY, 0.0f);
+    const XMMATRIX gui =
+        XMLoadFloat3x4(reinterpret_cast<const XMFLOAT3X4*>(&context.GetGUIMatrix().m));
+
+    XMMATRIX matrix = XMMatrixMultiply(world, correction);
+    matrix = XMMatrixMultiply(matrix, scale);
+    matrix = XMMatrixMultiply(matrix, translation);
+    matrix = XMMatrixMultiply(matrix, offset);
+    matrix = XMMatrixMultiply(matrix, gui);
+
+    XMStoreFloat4x4(&params.wvp, shader.GetWorldViewProj(matrix));
+    shader.QueueGlyphs(view, text->glyphs.data(), static_cast<unsigned int>(text->glyphs.size()),
+                       params);
   }
 
-  return CVertexBuffer(reinterpret_cast<void*>(buffer), buffer ? vertices.size() / 4 : 0, this);
+  // as LastEnd() leaves them
+  DX::Windowing()->SetScissors(scissor);
+  return true;
 }
 
-void CGUIFontTTFDX::AddReference(CGUIFontTTFDX* font, CD3DBuffer* pBuffer)
+CVertexBuffer CGUIFontTTFDX::CreateVertexBuffer(const std::vector<SVertex>& vertices) const
 {
-  font->m_buffers.emplace_back(pBuffer);
+  // do not create empty buffers, leave buffer as nullptr, it will be ignored on drawing stage
+  if (vertices.empty())
+    return CVertexBuffer(nullptr, 0, this);
+
+  auto text = std::make_unique<CTextVertices>();
+  CGUIShaderDX* shader = DX::Windowing()->GetGUIShader();
+  if (shader && shader->HasTextBatchPath() && vertices.size() % 4 == 0)
+  {
+    // batched text needs the glyph quads; the vertex buffer waits until the font draws the text
+    text->glyphs.reserve(vertices.size() / 4);
+    for (size_t i = 0; i < vertices.size(); i += 4)
+    {
+      const SVertex* v = &vertices[i];
+      if (!IsGlyphQuad(v))
+      {
+        text->glyphs.clear();
+        break;
+      }
+      text->glyphs.push_back(
+          {{v[0].x, v[0].y, v[2].x, v[2].y}, {v[0].u, v[0].v, v[2].u, v[2].v}, v[0].col});
+    }
+  }
+  text->vertices = vertices;
+  if (text->glyphs.empty() && !GetBuffer(*text))
+    return CVertexBuffer(nullptr, 0, this);
+
+  CTextVertices* handle = text.release();
+  AddReference(const_cast<CGUIFontTTFDX*>(this), handle);
+  return CVertexBuffer(reinterpret_cast<void*>(handle), vertices.size() / 4, this);
+}
+
+const CD3DBuffer* CGUIFontTTFDX::GetBuffer(CTextVertices& text)
+{
+  if (!text.buffer && !text.vertices.empty())
+  {
+    auto buffer = std::make_unique<CD3DBuffer>();
+    if (buffer->Create(D3D11_BIND_VERTEX_BUFFER, static_cast<UINT>(text.vertices.size()),
+                       sizeof(SVertex), DXGI_FORMAT_UNKNOWN, D3D11_USAGE_IMMUTABLE,
+                       text.vertices.data()))
+      text.buffer = std::move(buffer);
+    else
+      CLog::LogF(LOGERROR, "Failed to create vertex buffer.");
+    // one attempt, as before: the vertices are not needed any more either way
+    text.vertices = {};
+  }
+  return text.buffer.get();
+}
+
+void CGUIFontTTFDX::AddReference(CGUIFontTTFDX* font, CTextVertices* text)
+{
+  font->m_buffers.emplace_back(text);
 }
 
 void CGUIFontTTFDX::DestroyVertexBuffer(CVertexBuffer& buffer) const
 {
   if (nullptr != buffer.bufferHandle)
   {
-    CD3DBuffer* vbuffer = reinterpret_cast<CD3DBuffer*>(buffer.bufferHandle);
-    ClearReference((CGUIFontTTFDX*)this, vbuffer);
-    if (vbuffer)
-      delete vbuffer;
+    CTextVertices* text = static_cast<CTextVertices*>(buffer.bufferHandle);
+    ClearReference((CGUIFontTTFDX*)this, text);
+    delete text;
     buffer.bufferHandle = 0;
   }
 }
 
-void CGUIFontTTFDX::ClearReference(CGUIFontTTFDX* font, CD3DBuffer* pBuffer)
+void CGUIFontTTFDX::ClearReference(CGUIFontTTFDX* font, CTextVertices* text)
 {
-  std::list<CD3DBuffer*>::iterator it =
-      std::find(font->m_buffers.begin(), font->m_buffers.end(), pBuffer);
+  std::list<CTextVertices*>::iterator it =
+      std::find(font->m_buffers.begin(), font->m_buffers.end(), text);
   if (it != font->m_buffers.end())
     font->m_buffers.erase(it);
 }
@@ -304,6 +440,10 @@ std::unique_ptr<CTexture> CGUIFontTTFDX::ReallocTexture(unsigned int& newHeight)
 {
   assert(newHeight != 0);
   assert(m_textureWidth != 0);
+
+  // queued glyphs are drawn from the cache texture of their time: draw them before it changes
+  if (CGUIShaderDX* shader = DX::Windowing()->GetGUIShader())
+    shader->FlushBatch(CGUIShaderDX::BatchFlush::GLYPH_CACHE);
 
   // grow geometrically (as the GL/GLES font caches do): every reallocation copies the texture and
   // flushes the vertex caches, so growing one text line at a time is O(lines) reallocations

@@ -166,6 +166,7 @@ public:
     EXTERNAL, // CRenderSystemBase::FlushGUIBatch (video, RetroPlayer)
     COMMAND_LIST, // DeviceResources::FinishCommandList
     FRAME,
+    GLYPH_CACHE, // a font's glyph cache texture grows or is recreated
     COUNT
   };
   //! Counters since the shader was created; the change is logged every 10 s at debug level
@@ -176,6 +177,8 @@ public:
     uint64_t quads = 0;
     uint64_t draws = 0; // draw calls of those textures
     uint64_t otherDraws = 0; // DrawQuad, DrawIndexed and Draw (fonts, overlays, slideshow, ...)
+    uint64_t textRuns = 0; // texts queued by QueueGlyphs
+    uint64_t glyphs = 0;
     uint64_t flushes = 0; // batches drawn
     std::array<uint64_t, static_cast<size_t>(BatchFlush::COUNT)> reasons{};
   };
@@ -183,6 +186,45 @@ public:
   bool HasBatchPath() const { return m_bCreated && m_hasBatchPath && m_batchEnabled; }
   //! The batched path exists (whatever <gui><batchquads> says)
   bool CanBatch() const { return m_bCreated && m_hasBatchPath; }
+  //! Text is batched as well (QueueGlyphs): HasBatchPath() and <gui><batchtext> is not false
+  bool HasTextBatchPath() const { return HasBatchPath() && m_hasTextBatchPath && m_textBatchEnabled; }
+
+  //! One glyph of a text, as CGUIFontTTF::RenderCharacter writes it (font-local coordinates)
+  struct GlyphQuad
+  {
+    DirectX::XMFLOAT4 rect; // x1, y1, x2, y2
+    DirectX::XMFLOAT4 texture; // u1, v1, u2, v2 in the glyph cache
+    DirectX::XMFLOAT4 color;
+  };
+  //! What the glyphs of one text share
+  struct GlyphParams
+  {
+    DirectX::XMFLOAT4X4 wvp; // transposed world-view-projection, as cbWorld holds it (GetWorldViewProj)
+    DirectX::XMFLOAT4 clip; // x1, y1, x2, y2 in render target pixels: the scissor rectangle
+    float depth; // -1 = far to 1 = near (GL convention, as SetDepth)
+  };
+  /*!
+   * \brief Queue the glyphs of a text drawn from the glyph cache view with
+   * SHADER_METHOD_RENDER_FONT_RGBA. They share a run with texture blend images; pixels outside
+   * params.clip are discarded, as the scissor test would. Returns false if nothing was queued.
+   */
+  bool QueueGlyphs(ID3D11ShaderResourceView* view,
+                   const GlyphQuad* glyphs,
+                   unsigned int count,
+                   const GlyphParams& params);
+  //! The transposed world-view-projection matrix cbWorld would hold with this world matrix
+  DirectX::XMMATRIX XM_CALLCONV GetWorldViewProj(const DirectX::XMMATRIX& world) const
+  {
+    return DirectX::XMMatrixMultiplyTranspose(
+        world, DirectX::XMMatrixMultiply(m_cbWorldViewProj.GetView(),
+                                         m_cbWorldViewProj.GetProjection()));
+  }
+  //! Recalculate the clipping information as Begin() does, without ending the batch
+  void UpdateClipParams()
+  {
+    if (m_bCreated)
+      ClipToScissorParams();
+  }
   /*!
    * \brief Queue count quads drawn with the shader method and the views (view1: diffuse texture of the
    * multi-texture methods). Consecutive quads with the same method and views are drawn by one instanced
@@ -204,8 +246,9 @@ public:
   /*!
    * \brief Read the per-frame output constants (limited range, PQ, SDR peak luminance) once.
    * \param batchQuads <gui><batchquads>: queue texture quads (A/B switch, see HasBatchPath)
+   * \param batchText <gui><batchtext>: queue text as well (see HasTextBatchPath)
    */
-  void BeginFrame(bool limitedColorRange, bool batchQuads);
+  void BeginFrame(bool limitedColorRange, bool batchQuads, bool batchText);
   void DrawIndexed(unsigned int indexCount, unsigned int startIndex, unsigned int startVertex);
   void Draw(unsigned int vertexCount, unsigned int startVertex);
 
@@ -289,6 +332,11 @@ private:
   void ClipToScissorParams(void);
   void RestoreInputAssembler();
   void LogBatchStats();
+  //! end the run unless method and views can join it, then open one if there is none
+  void OpenRun(unsigned int method,
+               ID3D11ShaderResourceView* view0,
+               ID3D11ShaderResourceView* view1,
+               size_t count);
 
   //! state the queued quads depend on, compared at the flush in debug builds
   struct BatchState
@@ -326,6 +374,12 @@ private:
   CD3DVertexShader m_vertexShaderBatch;
   bool m_hasBatchPath = false;
   bool m_batchEnabled = true;
+  // batched text: texture blend images and glyphs share runs of the mixed method, view 0 is the
+  // image and view 1 the glyph cache (guishader_texture_batch.hlsl)
+  static constexpr unsigned int METHOD_MIXED = SHADER_METHOD_RENDER_COUNT;
+  CD3DPixelShader m_pixelShaderBatch;
+  bool m_hasTextBatchPath = false;
+  bool m_textBatchEnabled = true;
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchCornerBuffer; // corner selectors of the 4 vertices
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchIndexBuffer; // 6 indices
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchInstanceBuffer; // BATCH_CAPACITY QuadInstance
