@@ -66,7 +66,9 @@ public:
   void RequestDecodingTime();
   void ReleaseDecodingTime();
   void SetAlphaBlendEnable(bool enable);
+  bool IsAlphaBlendEnabled() const { return m_BlendEnabled; }
   void ShowSplash(const std::string& message) override;
+  void FlushGUIBatch() override;
 
   // reduced-resolution GUI layer (CGraphicContext::IsGuiReduced): the GUI renders into m_guiTarget,
   // the video into the back buffer at the output resolution, then the GUI is composited over it

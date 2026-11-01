@@ -26,6 +26,7 @@
 #include "cores/RetroPlayer/streams/RetroPlayerVideo.h"
 #include "games/GameServices.h"
 #include "pictures/Picture.h"
+#include "rendering/RenderSystem.h"
 #include "rendering/capture/CaptureReadback.h"
 #include "threads/SingleLock.h"
 #include "utils/ColorUtils.h"
@@ -776,6 +777,10 @@ void CRPRenderManager::RenderInternal(const std::shared_ptr<CRPBaseRenderer>& re
                                       bool bClear,
                                       uint32_t alpha)
 {
+  // the renderers set state of their own: queued GUI draws go first, under the gfx lock
+  if (CRenderSystemBase* renderSystem = CServiceBroker::GetRenderSystem())
+    renderSystem->FlushGUIBatch();
+
   CSingleExit exitLock(m_renderContext.GraphicsMutex());
 
   if (renderBuffer != nullptr)

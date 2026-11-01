@@ -47,6 +47,18 @@ using namespace DirectX::PackedVector;
 using namespace Microsoft::WRL;
 using namespace std::chrono_literals;
 
+namespace
+{
+using BatchFlush = CGUIShaderDX::BatchFlush;
+
+//! draw the queued GUI quads before a state change or a draw they would otherwise miss
+void FlushBatch(CGUIShaderDX* shader, BatchFlush reason)
+{
+  if (shader)
+    shader->FlushBatch(reason);
+}
+} // namespace
+
 CRenderSystemDX::CRenderSystemDX() : CRenderSystemBase()
 {
   m_bVSync = true;
@@ -55,7 +67,11 @@ CRenderSystemDX::CRenderSystemDX() : CRenderSystemBase()
   memset(&m_scissor, 0, sizeof m_scissor);
 }
 
-CRenderSystemDX::~CRenderSystemDX() = default;
+CRenderSystemDX::~CRenderSystemDX()
+{
+  if (m_deviceResources)
+    m_deviceResources->SetFinishCommandListCallback(nullptr);
+}
 
 bool CRenderSystemDX::InitRenderSystem()
 {
@@ -69,6 +85,13 @@ bool CRenderSystemDX::InitRenderSystem()
 
   m_bRenderCreated = true;
   m_deviceResources->RegisterDeviceNotify(this);
+  // whatever ends the command list (Present, captures, FlushGPU) draws the queued GUI quads first
+  m_deviceResources->SetFinishCommandListCallback(
+      [this]
+      {
+        if (m_pGUIShader)
+          m_pGUIShader->EndCommandList();
+      });
 
   // register platform dependent objects
 #if defined(TARGET_WINDOWS_STORE)
@@ -282,6 +305,8 @@ void CRenderSystemDX::PresentRender(bool rendered, bool videoLayer)
   if (!m_bRenderCreated)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::PRESENT);
+
   if (rendered && (m_stereoMode == RenderStereoMode::INTERLACED ||
                    m_stereoMode == RenderStereoMode::CHECKERBOARD))
   {
@@ -337,7 +362,7 @@ bool CRenderSystemDX::BeginRender()
 
   m_limitedColorRange = CServiceBroker::GetWinSystem()->UseLimitedColor();
   if (m_pGUIShader)
-    m_pGUIShader->BeginFrame(m_limitedColorRange);
+    m_pGUIShader->BeginFrame(m_limitedColorRange, GetEnabledGUIBatching());
   m_inScene = m_deviceResources->Begin();
   if (m_inScene && m_splashTarget && BeginGuiTarget(true))
   {
@@ -368,6 +393,8 @@ void CRenderSystemDX::InvalidateColorBuffer()
   if (!m_bRenderCreated)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::CLEAR);
+
   // the GUI target persists across frames: render over it and the last GUI frame shows through
   if (m_guiTargetBound)
   {
@@ -396,6 +423,8 @@ bool CRenderSystemDX::ClearBuffers(KODI::UTILS::COLOR::Color color)
 {
   if (!m_bRenderCreated)
     return false;
+
+  FlushBatch(m_pGUIShader, BatchFlush::CLEAR);
 
   float fColor[4];
   CD3DHelper::XMStoreColor(fColor, color);
@@ -465,12 +494,17 @@ void CRenderSystemDX::CaptureStateBlock()
 {
   if (!m_bRenderCreated)
     return;
+
+  // add-on renderers (visualisations, screensavers) and RetroPlayer set state of their own next
+  FlushBatch(m_pGUIShader, BatchFlush::STATE_BLOCK);
 }
 
 void CRenderSystemDX::ApplyStateBlock()
 {
   if (!m_bRenderCreated)
     return;
+
+  FlushBatch(m_pGUIShader, BatchFlush::STATE_BLOCK);
 
   auto m_pContext = m_deviceResources->GetD3DContext();
 
@@ -537,6 +571,8 @@ void CRenderSystemDX::SetViewPort(const CRect& viewPort)
   if (!m_bRenderCreated)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::VIEWPORT);
+
   m_viewPort.MinDepth   = 0.0f;
   m_viewPort.MaxDepth   = 1.0f;
   m_viewPort.TopLeftX   = viewPort.x1;
@@ -552,6 +588,8 @@ void CRenderSystemDX::RestoreViewPort()
 {
   if (!m_bRenderCreated)
     return;
+
+  FlushBatch(m_pGUIShader, BatchFlush::VIEWPORT);
 
   m_deviceResources->SetViewPort(m_viewPort);
   m_pGUIShader->SetViewPort(m_viewPort);
@@ -586,6 +624,10 @@ void CRenderSystemDX::SetScissors(const CRect& rect)
   if (!m_bRenderCreated)
     return;
 
+  // fonts and dirty regions set the scissors often, mostly to what they are
+  if (!m_ScissorsEnabled || m_scissor != rect)
+    FlushBatch(m_pGUIShader, BatchFlush::SCISSOR);
+
   auto m_pContext = m_deviceResources->GetD3DContext();
 
   m_scissor = rect;
@@ -603,6 +645,9 @@ void CRenderSystemDX::ResetScissors()
 {
   if (!m_bRenderCreated)
     return;
+
+  if (m_ScissorsEnabled)
+    FlushBatch(m_pGUIShader, BatchFlush::SCISSOR);
 
   auto m_pContext = m_deviceResources->GetD3DContext();
 
@@ -630,6 +675,7 @@ void CRenderSystemDX::SetDepthCulling(DepthCulling culling)
   if (!m_bRenderCreated)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::DEPTH_CULLING);
   m_depthCulling = culling;
   m_deviceResources->GetD3DContext()->OMSetDepthStencilState(GetDepthStencilState(), 0);
 }
@@ -646,6 +692,8 @@ void CRenderSystemDX::OnDXDeviceRestored()
 
 void CRenderSystemDX::SetStereoMode(RenderStereoMode mode, RenderStereoView view)
 {
+  // the views change the render target and the blend state's write mask
+  FlushBatch(m_pGUIShader, BatchFlush::STEREO);
   CRenderSystemBase::SetStereoMode(mode, view);
 
   if (!m_bRenderCreated)
@@ -755,11 +803,18 @@ bool CRenderSystemDX::InitGUIShader()
 
 void CRenderSystemDX::SetAlphaBlendEnable(bool enable)
 {
-  if (!m_bRenderCreated)
+  // m_BlendEnabled follows every blend state set on the context (CompositeGuiTarget restores it)
+  if (!m_bRenderCreated || enable == m_BlendEnabled)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::BLEND);
   m_deviceResources->GetD3DContext()->OMSetBlendState(enable ? m_BlendEnableState.Get() : m_BlendDisableState.Get(), nullptr, 0xFFFFFFFF);
   m_BlendEnabled = enable;
+}
+
+void CRenderSystemDX::FlushGUIBatch()
+{
+  FlushBatch(m_pGUIShader, BatchFlush::EXTERNAL);
 }
 
 CD3DTexture& CRenderSystemDX::GetBackBuffer()
@@ -864,6 +919,8 @@ bool CRenderSystemDX::BeginGuiTarget(bool guiWillRender)
   if (!m_bRenderCreated)
     return false;
 
+  FlushBatch(m_pGUIShader, BatchFlush::TARGET);
+
   CGraphicContext& gfx = CServiceBroker::GetWinSystem()->GetGfxContext();
   if (!gfx.IsGuiReduced())
   {
@@ -918,6 +975,7 @@ void CRenderSystemDX::SetOutputRenderState()
 
 void CRenderSystemDX::EndGuiTarget()
 {
+  FlushBatch(m_pGUIShader, BatchFlush::TARGET);
   CD3DTexture& backBuffer = m_deviceResources->GetBackBuffer();
   m_deviceResources->GetD3DContext()->OMSetRenderTargets(1, backBuffer.GetAddressOfRTV(),
                                                          m_deviceResources->GetDSV());
@@ -936,6 +994,7 @@ void CRenderSystemDX::CompositeGuiTarget()
   if (!m_compositeActive)
     return;
 
+  FlushBatch(m_pGUIShader, BatchFlush::TARGET);
   m_compositeActive = false;
   // a skipped GUI walk leaves the target, and whether it is empty, as it was; dirty regions render
   // partially, so nothing drawn means empty only after a full clear or on an empty target

@@ -16,6 +16,7 @@
 #include "application/Application.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "messaging/ApplicationMessenger.h"
+#include "rendering/RenderSystem.h"
 #include "rendering/capture/CaptureBlit.h"
 #include "rendering/capture/CaptureMetadata.h"
 #include "rendering/capture/CaptureService.h"
@@ -613,6 +614,10 @@ RESOLUTION CRenderManager::GetResolution()
 
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
+  // the video renderers set state of their own: queued GUI draws go first, under the gfx lock
+  if (CRenderSystemBase* renderSystem = CServiceBroker::GetRenderSystem())
+    renderSystem->FlushGUIBatch();
+
   CSingleExit exitLock(CServiceBroker::GetWinSystem()->GetGfxContext());
 
   {

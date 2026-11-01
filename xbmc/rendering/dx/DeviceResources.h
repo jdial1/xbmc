@@ -117,6 +117,11 @@ namespace DX
     void Unregister(ID3DResource *resource);
 
     void FinishCommandList(bool bExecute = true) const;
+    //! called first by FinishCommandList: the render system draws its queued GUI quads
+    void SetFinishCommandListCallback(std::function<void()> callback)
+    {
+      m_finishCommandListCallback = std::move(callback);
+    }
     void ClearDepthStencil() const;
     void ClearRenderTarget(ID3D11RenderTargetView* pRTView, float color[4]) const;
     void RegisterDeviceNotify(IDeviceNotify* deviceNotify);
@@ -193,6 +198,7 @@ namespace DX
     std::shared_mutex m_deviceChangeSection; //!< exclusive while the device is lost/recreated/released
     std::atomic<std::thread::id> m_deviceChangeOwner{}; //!< thread holding m_deviceChangeSection exclusively
     HANDLE m_frameLatencyWaitable{nullptr};
+    std::function<void()> m_finishCommandListCallback;
 #ifdef _DEBUG
     Microsoft::WRL::ComPtr<ID3D11Debug> m_d3dDebug;
 #endif

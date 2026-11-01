@@ -39,6 +39,7 @@ void CRenderSystemBase::OnAdvancedSettingsLoaded()
 
   m_showSplashImage = advSettings->m_splashImage;
   m_guiFrontToBackRendering = advSettings->m_guiFrontToBackRendering;
+  m_guiBatchQuads = advSettings->m_guiBatchQuads;
   m_guiGeometryClear =
       advSettings->m_guiGeometryClear ? ClearFunction::GEOMETRY : ClearFunction::FIXED_FUNCTION;
 }
@@ -146,6 +147,12 @@ bool CRenderSystemBase::GetEnabledFrontToBackRendering()
 {
   std::unique_lock lock(m_settingsSection);
   return m_guiFrontToBackRendering;
+}
+
+bool CRenderSystemBase::GetEnabledGUIBatching()
+{
+  std::unique_lock lock(m_settingsSection);
+  return m_guiBatchQuads;
 }
 
 ClearFunction CRenderSystemBase::GetClearFunction()

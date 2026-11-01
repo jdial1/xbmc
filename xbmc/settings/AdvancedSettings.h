@@ -392,6 +392,7 @@ class CAdvancedSettings : public ISettingCallback, public ISettingsHandler
     bool m_guiSmartRedraw;
     int32_t m_guiAnisotropicFiltering{0};
     bool m_guiFrontToBackRendering{false};
+    bool m_guiBatchQuads{true}; //!< batch GUI texture quads into instanced draws (DirectX)
     bool m_guiGeometryClear{true};
     bool m_guiAsyncTextureUpload{false};
     bool m_guiVideoLayoutTransparent{false};

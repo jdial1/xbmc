@@ -56,7 +56,9 @@ void CGUITextureD3D::Begin(KODI::UTILS::COLOR::Color color)
 
   m_col = color;
 
-  DX::Windowing()->SetAlphaBlendEnable(true);
+  // blend is nearly always on already: skip the redundant blend state call
+  if (!DX::Windowing()->IsAlphaBlendEnabled())
+    DX::Windowing()->SetAlphaBlendEnable(true);
 }
 
 void CGUITextureD3D::End()
@@ -171,6 +173,8 @@ void CGUITextureD3D::Free()
   m_quadBuffer = nullptr;
   m_quadBufferVersion = 0;
   m_quadCount = 0;
+  m_batchQuads.clear();
+  m_batchQuadsVersion = 0;
 }
 
 bool CGUITextureD3D::DrawQuads(const std::vector<Quad>& quads,
@@ -178,6 +182,9 @@ bool CGUITextureD3D::DrawQuads(const std::vector<Quad>& quads,
                                const CRect& rect)
 {
   CGUIShaderDX* pGUIShader = DX::Windowing()->GetGUIShader();
+  if (pGUIShader && pGUIShader->HasBatchPath())
+    return QueueQuads(*pGUIShader, quads, version, rect);
+
   ID3D11Device* device = DX::DeviceResources::Get()->GetD3DDevice();
   if (!pGUIShader || !pGUIShader->HasQuadPath() || !device ||
       quads.size() > CGUIShaderDX::MAX_GUI_QUADS)
@@ -264,6 +271,58 @@ bool CGUITextureD3D::DrawQuads(const std::vector<Quad>& quads,
   pGUIShader->SetDepth(m_depth);
   pGUIShader->DrawGUIQuads(m_quadBuffer.Get(), m_quadCount, constants);
   return true;
+}
+
+bool CGUITextureD3D::QueueQuads(CGUIShaderDX& shader,
+                                const std::vector<Quad>& quads,
+                                unsigned int version,
+                                const CRect& rect)
+{
+  if (m_batchQuadsVersion != version)
+  {
+    m_batchQuads.clear();
+    m_batchQuads.reserve(quads.size());
+    for (const Quad& quad : quads)
+    {
+      const CRect& a = quad.anchor;
+      const CRect& o = quad.offset;
+      const CRect& t = quad.texture;
+      const CRect& d = quad.diffuse;
+      m_batchQuads.push_back({{a.x1, a.y1, a.x2, a.y2},
+                              {o.x1, o.y1, o.x2, o.y2},
+                              {t.x1, t.y1, t.x2, t.y2},
+                              {d.x1, d.y1, d.x2, d.y2}});
+    }
+    m_batchQuadsVersion = version;
+  }
+
+  if (m_batchQuads.empty())
+    return true;
+
+  CGraphicContext& context = CServiceBroker::GetWinSystem()->GetGfxContext();
+  constexpr float unbounded = std::numeric_limits<float>::max();
+  const CRect clip = context.HasClipRegion() ? context.GetClipRegion()
+                                             : CRect(-unbounded, -unbounded, unbounded, unbounded);
+  const TransformMatrix& gui = context.GetGUIMatrix();
+
+  CGUIShaderDX::QuadParams params;
+  params.rect = {rect.x1, rect.y1, rect.Width(), rect.Height()};
+  params.clip = {clip.x1, clip.y1, clip.x2, clip.y2};
+  for (int row = 0; row < 3; row++)
+    params.gui[row] = {gui.m[row][0], gui.m[row][1], gui.m[row][2], gui.m[row][3]};
+  CD3DHelper::XMStoreColor(&params.color, m_col);
+  params.texSwap = {(GetOrientation() & 4) ? 1.0f : 0.0f, (m_info.orientation & 4) ? 1.0f : 0.0f};
+  params.snap = m_moving ? 2.0f : 1.0f;
+  // the control depth Render() computed, which the per-texture path passes to SetDepth()
+  params.depth = m_depth;
+
+  CDXTexture* tex = static_cast<CDXTexture*>(m_texture.m_textures[m_currentFrame].get());
+  ID3D11ShaderResourceView* diffuse = nullptr;
+  if (m_diffuse.size())
+    diffuse = static_cast<CDXTexture*>(m_diffuse.m_textures[0].get())->GetShaderResource();
+  return shader.QueueGUIQuads(ShaderMethod(), tex->GetShaderResource(), diffuse,
+                              m_batchQuads.data(), static_cast<unsigned int>(m_batchQuads.size()),
+                              params);
 }
 
 void CGUITextureD3D::DrawQuad(const CRect& rect,

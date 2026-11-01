@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "GUIShaderDX.h"
 #include "GUITexture.h"
 #include "utils/ColorUtils.h"
 
@@ -46,6 +47,10 @@ private:
   CGUITextureD3D(const CGUITextureD3D& texture) = default;
 
   unsigned int ShaderMethod() const;
+  bool QueueQuads(CGUIShaderDX& shader,
+                  const std::vector<Quad>& quads,
+                  unsigned int version,
+                  const CRect& rect);
 
   KODI::UTILS::COLOR::Color m_col;
 
@@ -53,5 +58,9 @@ private:
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_quadBuffer;
   unsigned int m_quadBufferVersion{0};
   unsigned int m_quadCount{0};
+
+  // the quads in the layout of the batched path, rebuilt when their version changes
+  std::vector<CGUIShaderDX::QuadGeometry> m_batchQuads;
+  unsigned int m_batchQuadsVersion{0};
 };
 

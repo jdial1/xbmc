@@ -870,6 +870,9 @@ void DX::DeviceResources::Unregister(ID3DResource* resource)
 
 void DX::DeviceResources::FinishCommandList(bool bExecute) const
 {
+  if (m_finishCommandListCallback)
+    m_finishCommandListCallback();
+
   if (m_d3dContext == m_deferrContext)
     return;
 

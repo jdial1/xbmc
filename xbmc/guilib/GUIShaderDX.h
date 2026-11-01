@@ -13,6 +13,11 @@
 #include "utils/Geometry.h"
 #include "utils/MemUtils.h"
 
+#include <array>
+#include <chrono>
+#include <cstdint>
+#include <vector>
+
 #include <DirectXMath.h>
 #include <wrl/client.h>
 
@@ -107,10 +112,98 @@ public:
   /*!
    * \brief Draw quadCount quads (4 QuadVertex each) from an immutable vertex buffer with the current
    * shader method, views and depth; clipping, GUI transform and pixel snapping run on the GPU.
+   * This is the per-texture path, used while batching (QueueGUIQuads) is off or unavailable.
    */
   void DrawGUIQuads(ID3D11Buffer* vertexBuffer, unsigned int quadCount, const QuadConstants& constants);
-  /*! \brief Read the per-frame output constants (limited range, PQ, SDR peak luminance) once. */
-  void BeginFrame(bool limitedColorRange);
+
+  //! One quad of a texture: its edges and texture coordinates, as rectangles (x1, y1, x2, y2)
+  struct QuadGeometry
+  {
+    DirectX::XMFLOAT4 anchor; // fractions of the texture's rectangle
+    DirectX::XMFLOAT4 offset; // added to the anchored edges
+    DirectX::XMFLOAT4 texture;
+    DirectX::XMFLOAT4 diffuse;
+  };
+  //! What the quads of one texture share: the QuadConstants of DrawGUIQuads plus the depth
+  struct QuadParams
+  {
+    DirectX::XMFLOAT4 rect; // x, y, width, height of the texture rectangle
+    DirectX::XMFLOAT4 clip; // x1, y1, x2, y2
+    DirectX::XMFLOAT4 gui[3]; // rows of the GUI (final) transform
+    DirectX::XMFLOAT4 color;
+    DirectX::XMFLOAT2 texSwap;
+    float snap; // 1 = round to whole pixels, 2 = keep subpixel positions (moving texture)
+    float depth; // -1 = far to 1 = near (GL convention, as SetDepth)
+  };
+  //! Per-instance vertex of guishader_quad_batch_vert.hlsl (slot 1); params.depth is 0 far to 1 near
+  struct QuadInstance
+  {
+    QuadGeometry geometry;
+    QuadParams params;
+  };
+  static constexpr unsigned int BATCH_CAPACITY = 4096; //!< quads in the instance buffer
+
+  //! Why queued quads were drawn (FlushBatch)
+  enum class BatchFlush
+  {
+    TEXTURE, // the next quads use another shader method or view
+    FULL, // the instance buffer is full
+    BEGIN, // another GUI shader draw begins (fonts, DrawQuad, the per-texture path)
+    VIEWS,
+    DEPTH,
+    MATRIX, // world, view or projection changed
+    CLIP, // shader clip or texture step (fonts)
+    VIEWPORT,
+    DRAW, // a GUI shader draw or buffer restore without Begin() first
+    STATE_BLOCK,
+    BLEND,
+    SCISSOR,
+    DEPTH_CULLING,
+    TARGET, // reduced GUI target bound, unbound or composited
+    CLEAR,
+    STEREO,
+    PRESENT,
+    EXTERNAL, // CRenderSystemBase::FlushGUIBatch (video, RetroPlayer)
+    COMMAND_LIST, // DeviceResources::FinishCommandList
+    FRAME,
+    COUNT
+  };
+  //! Counters since the shader was created; the change is logged every 10 s at debug level
+  struct BatchStats
+  {
+    uint64_t frames = 0;
+    uint64_t textures = 0; // textures drawn by QueueGUIQuads or DrawGUIQuads
+    uint64_t quads = 0;
+    uint64_t draws = 0; // draw calls of those textures
+    uint64_t otherDraws = 0; // DrawQuad, DrawIndexed and Draw (fonts, overlays, slideshow, ...)
+    uint64_t flushes = 0; // batches drawn
+    std::array<uint64_t, static_cast<size_t>(BatchFlush::COUNT)> reasons{};
+  };
+  //! Batching is on: feature level 9_3 or higher and <gui><batchquads> is not false
+  bool HasBatchPath() const { return m_bCreated && m_hasBatchPath && m_batchEnabled; }
+  /*!
+   * \brief Queue count quads drawn with the shader method and the views (view1: diffuse texture of the
+   * multi-texture methods). Consecutive quads with the same method and views are drawn by one instanced
+   * draw; the batch holds the views until then. Everything else that draws or changes state flushes
+   * the batch first. Returns false if nothing was queued.
+   */
+  bool QueueGUIQuads(unsigned int method,
+                     ID3D11ShaderResourceView* view0,
+                     ID3D11ShaderResourceView* view1,
+                     const QuadGeometry* quads,
+                     unsigned int count,
+                     const QuadParams& params);
+  /*! \brief Draw the queued quads; nothing to do if none are queued. */
+  void FlushBatch(BatchFlush reason);
+  /*! \brief Flush before the command list is finished; the next instance buffer map discards. */
+  void EndCommandList();
+  const BatchStats& GetBatchStats() const { return m_batchStats; }
+  static const char* GetBatchFlushName(BatchFlush reason);
+  /*!
+   * \brief Read the per-frame output constants (limited range, PQ, SDR peak luminance) once.
+   * \param batchQuads <gui><batchquads>: queue texture quads (A/B switch, see HasBatchPath)
+   */
+  void BeginFrame(bool limitedColorRange, bool batchQuads);
   void DrawIndexed(unsigned int indexCount, unsigned int startIndex, unsigned int startVertex);
   void Draw(unsigned int vertexCount, unsigned int startVertex);
 
@@ -192,6 +285,21 @@ private:
   void SetSamplers(void);
   void ApplyChanges(void);
   void ClipToScissorParams(void);
+  void RestoreInputAssembler();
+  void LogBatchStats();
+
+  //! state the queued quads depend on, compared at the flush in debug builds
+  struct BatchState
+  {
+    Microsoft::WRL::ComPtr<ID3D11BlendState> blend;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilState> depthStencil;
+    Microsoft::WRL::ComPtr<ID3D11RasterizerState> rasterizer;
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> target;
+    Microsoft::WRL::ComPtr<ID3D11DepthStencilView> depthView;
+    D3D11_RECT scissor{};
+    D3D11_VIEWPORT viewport{};
+  };
+  void GetBatchState(BatchState& state) const;
 
   // GUI constants
   cbViewPort m_cbViewPort = {};
@@ -211,6 +319,24 @@ private:
   bool m_hasQuadPath = false;
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_pQuadCB;
   Microsoft::WRL::ComPtr<ID3D11Buffer> m_pQuadIndexBuffer;
+
+  // batched quads (QueueGUIQuads)
+  CD3DVertexShader m_vertexShaderBatch;
+  bool m_hasBatchPath = false;
+  bool m_batchEnabled = true;
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchCornerBuffer; // corner selectors of the 4 vertices
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchIndexBuffer; // 6 indices
+  Microsoft::WRL::ComPtr<ID3D11Buffer> m_pBatchInstanceBuffer; // BATCH_CAPACITY QuadInstance
+  std::vector<QuadInstance> m_batch;
+  unsigned int m_batchMethod = 0;
+  Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> m_batchViews[2]; // held until drawn
+  BatchState m_batchState;
+  unsigned int m_batchOffset = 0; // first free instance of m_pBatchInstanceBuffer
+  bool m_batchDiscard = true; // the next map discards (first map of a command list)
+  bool m_batchNoOverwrite = true; // false: every flush discards
+  BatchStats m_batchStats;
+  BatchStats m_batchStatsLogged;
+  std::chrono::steady_clock::time_point m_batchLogTime;
 
   // per-frame output constants (BeginFrame)
   float m_blackLevel = 0.f;

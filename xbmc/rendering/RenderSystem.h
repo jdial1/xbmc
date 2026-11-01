@@ -102,11 +102,19 @@ public:
   virtual void ShowSplash(const std::string& message);
 
   /*!
+   * \brief Draw the GUI quads queued so far (DirectX batches GUI texture quads, the others draw at
+   * once). Renderers that set GPU state of their own, like video and RetroPlayer, call this first.
+   */
+  virtual void FlushGUIBatch() {}
+
+  /*!
    * \brief Call when the cached advanced settings values need to be refreshed.
    *        note: may execute on a different thread.
    */
   virtual void OnAdvancedSettingsLoaded();
   virtual bool GetEnabledFrontToBackRendering();
+  //! <gui><batchquads> (DirectX)
+  bool GetEnabledGUIBatching();
   virtual ClearFunction GetClearFunction();
   virtual bool GetShowSplashImage();
 
@@ -133,6 +141,7 @@ protected:
   CCriticalSection m_settingsSection;
   std::optional<int> m_settingsCallbackHandle;
   bool m_guiFrontToBackRendering{false};
+  bool m_guiBatchQuads{true};
   ClearFunction m_guiGeometryClear{ClearFunction::FIXED_FUNCTION};
   bool m_showSplashImage{true};
 };

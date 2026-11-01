@@ -217,6 +217,8 @@ if(CORE_SYSTEM_NAME STREQUAL windows OR CORE_SYSTEM_NAME STREQUAL windowsstore)
   set(SHADERS_VERTEX guishader_clip_vert.hlsl
                      guishader_quad_vert.hlsl
                      guishader_vert.hlsl)
+  # instanced: feature level 9_3 or higher (the per-texture quad path covers 9_1)
+  set(SHADERS_VERTEX_9_3 guishader_quad_batch_vert.hlsl)
   set(SHADERS_PIXEL guishader_checkerboard_right.hlsl
                     guishader_checkerboard_left.hlsl
                     guishader_default.hlsl
@@ -233,6 +235,17 @@ if(CORE_SYSTEM_NAME STREQUAL windows OR CORE_SYSTEM_NAME STREQUAL windowsstore)
     add_custom_command(OUTPUT ${file}.h
                        COMMAND windows::FXC
                        ARGS /Fh ${file}.h /E VS /T vs_4_0_level_9_1 /Vn ${file} /Qstrip_reflect
+                            ${CMAKE_SOURCE_DIR}/system/shaders/${shader}
+                       DEPENDS ${CMAKE_SOURCE_DIR}/system/shaders/${shader}
+                       COMMENT "FX compile vertex shader ${shader}"
+                       VERBATIM)
+    list(APPEND SHADERS ${file}.h)
+  endforeach()
+  foreach(shader ${SHADERS_VERTEX_9_3})
+    get_filename_component(file ${shader} NAME_WE)
+    add_custom_command(OUTPUT ${file}.h
+                       COMMAND windows::FXC
+                       ARGS /Fh ${file}.h /E VS /T vs_4_0_level_9_3 /Vn ${file} /Qstrip_reflect
                             ${CMAKE_SOURCE_DIR}/system/shaders/${shader}
                        DEPENDS ${CMAKE_SOURCE_DIR}/system/shaders/${shader}
                        COMMENT "FX compile vertex shader ${shader}"

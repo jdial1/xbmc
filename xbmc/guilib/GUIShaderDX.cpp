@@ -10,6 +10,7 @@
 #include "windowing/GraphicContext.h"
 #include "rendering/dx/DeviceResources.h"
 #include "rendering/dx/RenderContext.h"
+#include "utils/StringUtils.h"
 #include "utils/log.h"
 
 // shaders bytecode includes
@@ -22,6 +23,7 @@
 #include "guishader_interlaced_right.h"
 #include "guishader_multi_texture_blend.h"
 #include "guishader_multi_texture_blend_nearest.h"
+#include "guishader_quad_batch_vert.h"
 #include "guishader_quad_vert.h"
 #include "guishader_texture.h"
 #include "guishader_texture_nearest.h"
@@ -30,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 
 #include <d3dcompiler.h>
 
@@ -62,6 +65,25 @@ constexpr std::array<D3D_SHADER_DATA, SHADER_METHOD_RENDER_COUNT> shaderCode =
 static_assert(std::ranges::none_of(shaderCode,
                                    [](const auto& s)
                                    { return s.pBytecode == nullptr || s.BytecodeLength == 0; }));
+
+static_assert(sizeof(CGUIShaderDX::QuadInstance) == 11 * sizeof(XMFLOAT4),
+              "QuadInstance must match the instance layout of guishader_quad_batch_vert.hlsl");
+
+namespace
+{
+#if defined(_DEBUG)
+constexpr bool VALIDATE_BATCHES = true; // compare the state of each batch at its flush
+#else
+constexpr bool VALIDATE_BATCHES = false;
+#endif
+
+constexpr UINT BATCH_CORNER_STRIDE = 2 * sizeof(float);
+
+bool SameMatrix(const XMMATRIX& a, const XMMATRIX& b)
+{
+  return memcmp(&a, &b, sizeof(XMMATRIX)) == 0;
+}
+} // namespace
 
 void XM_CALLCONV CGUIShaderDX::CWorldViewProj::SetWVP(const XMMATRIX& w,
                                                       const XMMATRIX& v,
@@ -142,6 +164,31 @@ bool CGUIShaderDX::Initialize()
       CLog::LogF(LOGWARNING, "GPU texture quad shader unavailable, using the CPU quad path.");
   }
 
+  {
+    // batched texture quads: slot 0 holds the corner selectors of the 4 vertices, slot 1 one
+    // QuadInstance per quad. Instancing needs feature level 9_3, as does the shader profile.
+    constexpr UINT instanceElements = static_cast<UINT>(sizeof(QuadInstance) / sizeof(XMFLOAT4));
+    D3D11_INPUT_ELEMENT_DESC batchLayout[1 + instanceElements] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0}};
+    for (UINT i = 0; i < instanceElements; i++)
+      batchLayout[1 + i] = {"TEXCOORD",
+                            i,
+                            DXGI_FORMAT_R32G32B32A32_FLOAT,
+                            1,
+                            i * static_cast<UINT>(sizeof(XMFLOAT4)),
+                            D3D11_INPUT_PER_INSTANCE_DATA,
+                            1};
+    const D3D_FEATURE_LEVEL featureLevel = DX::DeviceResources::Get()->GetDeviceFeatureLevel();
+    m_hasBatchPath = featureLevel >= D3D_FEATURE_LEVEL_9_3 &&
+                     m_vertexShaderBatch.Create(guishader_quad_batch_vert,
+                                                sizeof(guishader_quad_batch_vert), batchLayout,
+                                                ARRAYSIZE(batchLayout));
+    if (!m_hasBatchPath)
+      CLog::LogF(LOGWARNING,
+                 "Batched GUI quads unavailable (feature level {:x}), drawing them per texture.",
+                 static_cast<unsigned int>(featureLevel));
+  }
+
   for (std::size_t i = 0; i < SHADER_METHOD_RENDER_COUNT; i++)
   {
     // All methods except the font ones with shader clipping share guishader_vert.hlsl
@@ -159,6 +206,9 @@ bool CGUIShaderDX::Initialize()
     goto error;
 
   m_bCreated = true;
+  if (m_hasBatchPath)
+    CLog::LogF(LOGINFO, "GUI texture quads are batched (up to {} per instanced draw).",
+               BATCH_CAPACITY);
   return true;
 
 error:
@@ -169,6 +219,7 @@ error:
   m_vertexShader.Release();
   m_vertexShaderClip.Release();
   m_vertexShaderQuad.Release();
+  m_vertexShaderBatch.Release();
 
   return false;
 }
@@ -218,6 +269,34 @@ bool CGUIShaderDX::CreateBuffers()
       CLog::LogF(LOGWARNING, "Failed to create GPU texture quad buffers, using the CPU quad path.");
       m_hasQuadPath = false;
     }
+  }
+
+  if (m_hasBatchPath)
+  {
+    // corner selectors (0 = x1 or y1, 1 = x2 or y2) of the 4 vertices, and the 2 triangles of a quad
+    const float corners[] = {0.f, 0.f, 1.f, 0.f, 1.f, 1.f, 0.f, 1.f};
+    const uint16_t indices[] = {0, 1, 2, 2, 3, 0};
+    CD3D11_BUFFER_DESC cornerDesc(sizeof(corners), D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_IMMUTABLE);
+    CD3D11_BUFFER_DESC indexDesc(sizeof(indices), D3D11_BIND_INDEX_BUFFER, D3D11_USAGE_IMMUTABLE);
+    CD3D11_BUFFER_DESC instanceDesc(static_cast<UINT>(BATCH_CAPACITY * sizeof(QuadInstance)),
+                                    D3D11_BIND_VERTEX_BUFFER, D3D11_USAGE_DYNAMIC,
+                                    D3D11_CPU_ACCESS_WRITE);
+    D3D11_SUBRESOURCE_DATA cornerData = {corners, 0, 0};
+    D3D11_SUBRESOURCE_DATA indexData = {indices, 0, 0};
+    if (FAILED(pDevice->CreateBuffer(&cornerDesc, &cornerData,
+                                     m_pBatchCornerBuffer.ReleaseAndGetAddressOf())) ||
+        FAILED(pDevice->CreateBuffer(&indexDesc, &indexData,
+                                     m_pBatchIndexBuffer.ReleaseAndGetAddressOf())) ||
+        FAILED(pDevice->CreateBuffer(&instanceDesc, nullptr,
+                                     m_pBatchInstanceBuffer.ReleaseAndGetAddressOf())))
+    {
+      CLog::LogF(LOGWARNING, "Failed to create the GUI quad batch buffers, drawing quads per texture.");
+      m_hasBatchPath = false;
+    }
+    m_batch.reserve(256);
+    m_batchOffset = 0;
+    m_batchDiscard = true;
+    m_batchNoOverwrite = true;
   }
 
   CRect viewPort;
@@ -282,6 +361,8 @@ void CGUIShaderDX::ApplyStateBlock(void)
   if (!m_bCreated)
     return;
 
+  FlushBatch(BatchFlush::STATE_BLOCK);
+
   ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
 
   m_shaders[m_currentShader].m_vs->BindShader();
@@ -293,13 +374,16 @@ void CGUIShaderDX::ApplyStateBlock(void)
 
   SetSamplers();
 
-  RestoreBuffers();
+  RestoreInputAssembler();
 }
 
 void CGUIShaderDX::Begin(unsigned int flags)
 {
   if (!m_bCreated)
     return;
+
+  // fonts and the other draws set state of their own after this, some of it directly on the context
+  FlushBatch(BatchFlush::BEGIN);
 
   if (flags >= SHADER_METHOD_RENDER_COUNT)
   {
@@ -327,6 +411,7 @@ void CGUIShaderDX::DrawQuad(Vertex& v1, Vertex& v2, Vertex& v3, Vertex& v4)
   if (!m_bCreated)
     return;
 
+  FlushBatch(BatchFlush::DRAW);
   ApplyChanges();
 
   ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
@@ -342,6 +427,7 @@ void CGUIShaderDX::DrawQuad(Vertex& v1, Vertex& v2, Vertex& v3, Vertex& v4)
     // Draw primitives
     pContext->Draw(4, 0);
     ++CRenderSystemBase::m_GUIElementCount;
+    ++m_batchStats.otherDraws;
   }
 }
 
@@ -352,6 +438,7 @@ void CGUIShaderDX::DrawGUIQuads(ID3D11Buffer* vertexBuffer,
   if (!HasQuadPath() || !vertexBuffer || quadCount == 0 || quadCount > MAX_GUI_QUADS)
     return;
 
+  FlushBatch(BatchFlush::DRAW);
   ApplyChanges();
 
   ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
@@ -370,14 +457,27 @@ void CGUIShaderDX::DrawGUIQuads(ID3D11Buffer* vertexBuffer,
   pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   pContext->DrawIndexed(quadCount * 6, 0, 0);
   ++CRenderSystemBase::m_GUIElementCount;
+  ++m_batchStats.textures;
+  m_batchStats.quads += quadCount;
+  ++m_batchStats.draws;
 
   // restore what the other GUI draw paths expect
   m_shaders[m_currentShader].m_vs->BindShader();
-  RestoreBuffers();
+  RestoreInputAssembler();
 }
 
-void CGUIShaderDX::BeginFrame(bool limitedColorRange)
+void CGUIShaderDX::BeginFrame(bool limitedColorRange, bool batchQuads)
 {
+  FlushBatch(BatchFlush::FRAME);
+  m_batchEnabled = batchQuads;
+  ++m_batchStats.frames;
+  const auto now = std::chrono::steady_clock::now();
+  if (now - m_batchLogTime >= std::chrono::seconds(10))
+  {
+    LogBatchStats();
+    m_batchLogTime = now;
+  }
+
   const float blackLevel = limitedColorRange ? 16.f / 255.f : 0.f;
   const float colorRange = limitedColorRange ? (235.f - 16.f) / 255.f : 1.0f;
   const int PQ = DX::Windowing()->IsTransferPQ() ? 1 : 0;
@@ -399,9 +499,11 @@ void CGUIShaderDX::DrawIndexed(unsigned int indexCount, unsigned int startIndex,
   if (!m_bCreated)
     return;
 
+  FlushBatch(BatchFlush::DRAW);
   ApplyChanges();
   DX::DeviceResources::Get()->GetD3DContext()->DrawIndexed(indexCount, startIndex, startVertex);
   ++CRenderSystemBase::m_GUIElementCount;
+  ++m_batchStats.otherDraws;
 }
 
 void CGUIShaderDX::Draw(unsigned int vertexCount, unsigned int startVertex)
@@ -409,9 +511,11 @@ void CGUIShaderDX::Draw(unsigned int vertexCount, unsigned int startVertex)
   if (!m_bCreated)
     return;
 
+  FlushBatch(BatchFlush::DRAW);
   ApplyChanges();
   DX::DeviceResources::Get()->GetD3DContext()->Draw(vertexCount, startVertex);
   ++CRenderSystemBase::m_GUIElementCount;
+  ++m_batchStats.otherDraws;
 }
 
 void CGUIShaderDX::SetShaderViews(unsigned int numViews, ID3D11ShaderResourceView** views)
@@ -419,11 +523,21 @@ void CGUIShaderDX::SetShaderViews(unsigned int numViews, ID3D11ShaderResourceVie
   if (!m_bCreated)
     return;
 
+  FlushBatch(BatchFlush::VIEWS);
   DX::DeviceResources::Get()->GetD3DContext()->PSSetShaderResources(0, numViews, views);
 }
 
 void CGUIShaderDX::Release()
 {
+  // queued quads are dropped, not drawn: the context may be gone
+  m_batch.clear();
+  m_batchViews[0] = nullptr;
+  m_batchViews[1] = nullptr;
+  m_batchState = {};
+  m_pBatchCornerBuffer = nullptr;
+  m_pBatchIndexBuffer = nullptr;
+  m_pBatchInstanceBuffer = nullptr;
+  m_hasBatchPath = false;
   m_pQuadCB = nullptr;
   m_pQuadIndexBuffer = nullptr;
   m_hasQuadPath = false;
@@ -445,6 +559,7 @@ void CGUIShaderDX::SetViewPort(D3D11_VIEWPORT viewPort)
     || viewPort.Width    != m_cbViewPort.Width
     || viewPort.Height   != m_cbViewPort.Height)
   {
+    FlushBatch(BatchFlush::VIEWPORT);
     m_cbViewPort.TopLeftX = viewPort.TopLeftX;
     m_cbViewPort.TopLeftY = viewPort.TopLeftY;
     m_cbViewPort.Width = viewPort.Width;
@@ -467,32 +582,49 @@ void CGUIShaderDX::Project(float& x, float& y, float& z) const
   z = .0f;
 }
 
+// The camera is set again for every window and camera control: an unchanged matrix keeps the batch
+// (and cbWorld) as they are.
 void XM_CALLCONV CGUIShaderDX::SetWVP(const XMMATRIX& w, const XMMATRIX& v, const XMMATRIX& p)
 {
+  if (SameMatrix(w, m_cbWorldViewProj.GetWorld()) && SameMatrix(v, m_cbWorldViewProj.GetView()) &&
+      SameMatrix(p, m_cbWorldViewProj.GetProjection()))
+    return;
+  FlushBatch(BatchFlush::MATRIX);
   m_bIsWVPDirty = true;
   m_cbWorldViewProj.SetWVP(w, v, p);
 }
 
 void CGUIShaderDX::SetWorld(const XMMATRIX& value)
 {
+  if (SameMatrix(value, m_cbWorldViewProj.GetWorld()))
+    return;
+  FlushBatch(BatchFlush::MATRIX);
   m_bIsWVPDirty = true;
   m_cbWorldViewProj.SetWorld(value);
 }
 
 void CGUIShaderDX::SetView(const XMMATRIX& value)
 {
+  if (SameMatrix(value, m_cbWorldViewProj.GetView()))
+    return;
+  FlushBatch(BatchFlush::MATRIX);
   m_bIsWVPDirty = true;
   m_cbWorldViewProj.SetView(value);
 }
 
 void CGUIShaderDX::SetProjection(const XMMATRIX& value)
 {
+  if (SameMatrix(value, m_cbWorldViewProj.GetProjection()))
+    return;
+  FlushBatch(BatchFlush::MATRIX);
   m_bIsWVPDirty = true;
   m_cbWorldViewProj.SetProjection(value);
 }
 
 void CGUIShaderDX::SetDepth(const float depth)
 {
+  // batched quads carry their own depth: this is a draw outside the batch (fonts, DrawQuad)
+  FlushBatch(BatchFlush::DEPTH);
   if (depth == m_depth)
     return;
   m_bIsWVPDirty = true;
@@ -501,6 +633,7 @@ void CGUIShaderDX::SetDepth(const float depth)
 
 void CGUIShaderDX::SetShaderClip(float x1, float y1, float x2, float y2)
 {
+  FlushBatch(BatchFlush::CLIP);
   if (m_shaderClip.x == x1 && m_shaderClip.y == y1 && m_shaderClip.z == x2 && m_shaderClip.w == y2)
     return;
   m_bIsWVPDirty = true;
@@ -512,6 +645,7 @@ void CGUIShaderDX::SetShaderClip(float x1, float y1, float x2, float y2)
 
 void CGUIShaderDX::SetTexStep(float stepX, float stepY, float stepX2, float stepY2)
 {
+  FlushBatch(BatchFlush::CLIP);
   if (m_texStep.x == stepX && m_texStep.y == stepY && m_texStep2.x == stepX2 &&
       m_texStep2.y == stepY2)
     return;
@@ -571,6 +705,12 @@ void CGUIShaderDX::ApplyChanges(void)
 }
 
 void CGUIShaderDX::RestoreBuffers(void)
+{
+  FlushBatch(BatchFlush::DRAW);
+  RestoreInputAssembler();
+}
+
+void CGUIShaderDX::RestoreInputAssembler()
 {
   const unsigned stride = sizeof(Vertex);
   const unsigned offset = 0;
@@ -642,4 +782,211 @@ void CGUIShaderDX::ClipToScissorParams(void)
     m_clipYFactor = m_clipYFactor * yMult;
     m_clipYOffset = m_clipYOffset * yMult + (viewPort.y2 + viewPort.y1) / 2;
   }
+}
+
+bool CGUIShaderDX::QueueGUIQuads(unsigned int method,
+                                 ID3D11ShaderResourceView* view0,
+                                 ID3D11ShaderResourceView* view1,
+                                 const QuadGeometry* quads,
+                                 unsigned int count,
+                                 const QuadParams& params)
+{
+  if (!HasBatchPath() || !quads || count == 0 || count > BATCH_CAPACITY ||
+      method >= SHADER_METHOD_RENDER_COUNT)
+    return false;
+
+  // a run goes on while the method and the views stay; nothing is reordered
+  if (!m_batch.empty() && (method != m_batchMethod || view0 != m_batchViews[0].Get() ||
+                           view1 != m_batchViews[1].Get()))
+    FlushBatch(BatchFlush::TEXTURE);
+  else if (m_batch.size() + count > BATCH_CAPACITY)
+    FlushBatch(BatchFlush::FULL);
+
+  if (m_batch.empty())
+  {
+    m_batchMethod = method;
+    m_batchViews[0] = view0;
+    m_batchViews[1] = view1;
+    if constexpr (VALIDATE_BATCHES)
+      GetBatchState(m_batchState);
+  }
+
+  QuadInstance instance;
+  instance.params = params;
+  // Translate from GL convention (-1 far 1 near) to D3D (0 far 1 near) exactly as ApplyChanges() does
+  // for cbWorld: the front-to-back pass and the focus overlays rely on the control depth
+  instance.params.depth = params.depth / 2.f + 0.5f;
+  for (unsigned int i = 0; i < count; i++)
+  {
+    instance.geometry = quads[i];
+    m_batch.push_back(instance);
+  }
+
+  ++m_batchStats.textures;
+  m_batchStats.quads += count;
+  ++CRenderSystemBase::m_GUIElementCount;
+  return true;
+}
+
+void CGUIShaderDX::FlushBatch(BatchFlush reason)
+{
+  if (m_batch.empty())
+    return;
+
+  ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
+  if (!pContext)
+  {
+    m_batch.clear();
+    m_batchViews[0] = nullptr;
+    m_batchViews[1] = nullptr;
+    return;
+  }
+
+  if constexpr (VALIDATE_BATCHES)
+  {
+    BatchState state;
+    GetBatchState(state);
+    if (state.blend != m_batchState.blend || state.depthStencil != m_batchState.depthStencil ||
+        state.rasterizer != m_batchState.rasterizer || state.target != m_batchState.target ||
+        state.depthView != m_batchState.depthView ||
+        memcmp(&state.scissor, &m_batchState.scissor, sizeof(state.scissor)) != 0 ||
+        memcmp(&state.viewport, &m_batchState.viewport, sizeof(state.viewport)) != 0)
+      CLog::LogF(LOGERROR, "state changed under {} queued quads without a flush (flushed for {})",
+                 m_batch.size(), GetBatchFlushName(reason));
+    m_batchState = {};
+  }
+
+  ApplyChanges();
+
+  m_vertexShaderBatch.BindShader();
+  if (m_currentShader != m_batchMethod)
+  {
+    m_currentShader = m_batchMethod;
+    m_shaders[m_currentShader].m_ps.BindShader();
+  }
+  // the multi-texture methods read the diffuse texture from t1
+  const bool diffuse = m_batchMethod == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND ||
+                       m_batchMethod == SHADER_METHOD_RENDER_MULTI_TEXTURE_BLEND_NEAREST;
+  ID3D11ShaderResourceView* views[] = {m_batchViews[0].Get(), m_batchViews[1].Get()};
+  pContext->PSSetShaderResources(0, diffuse ? 2 : 1, views);
+  pContext->IASetIndexBuffer(m_pBatchIndexBuffer.Get(), DXGI_FORMAT_R16_UINT, 0);
+  pContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+  ID3D11Buffer* buffers[] = {m_pBatchCornerBuffer.Get(), m_pBatchInstanceBuffer.Get()};
+  const UINT strides[] = {BATCH_CORNER_STRIDE, sizeof(QuadInstance)};
+  size_t done = 0;
+  while (done < m_batch.size())
+  {
+    // The first map of a command list must discard (deferred contexts), later ones append behind
+    // the instances already drawn; a full buffer starts over with a discard.
+    const bool discard = m_batchDiscard || !m_batchNoOverwrite || m_batchOffset >= BATCH_CAPACITY;
+    if (discard)
+      m_batchOffset = 0;
+    const UINT count = static_cast<UINT>(
+        std::min<size_t>(m_batch.size() - done, BATCH_CAPACITY - m_batchOffset));
+    D3D11_MAPPED_SUBRESOURCE res;
+    const HRESULT hr =
+        pContext->Map(m_pBatchInstanceBuffer.Get(), 0,
+                      discard ? D3D11_MAP_WRITE_DISCARD : D3D11_MAP_WRITE_NO_OVERWRITE, 0, &res);
+    if (FAILED(hr))
+    {
+      if (discard)
+      {
+        CLog::LogF(LOGERROR, "failed to map the GUI quad instance buffer ({:x})",
+                   static_cast<uint32_t>(hr));
+        break;
+      }
+      CLog::LogF(LOGWARNING, "NO_OVERWRITE maps unsupported ({:x}), every GUI quad batch discards.",
+                 static_cast<uint32_t>(hr));
+      m_batchNoOverwrite = false;
+      continue;
+    }
+    memcpy(static_cast<QuadInstance*>(res.pData) + m_batchOffset, m_batch.data() + done,
+           count * sizeof(QuadInstance));
+    pContext->Unmap(m_pBatchInstanceBuffer.Get(), 0);
+    m_batchDiscard = false;
+
+    const UINT offsets[] = {0, m_batchOffset * static_cast<UINT>(sizeof(QuadInstance))};
+    pContext->IASetVertexBuffers(0, 2, buffers, strides, offsets);
+    pContext->DrawIndexedInstanced(6, count, 0, 0, 0);
+    ++m_batchStats.draws;
+    m_batchOffset += count;
+    done += count;
+  }
+  ++m_batchStats.flushes;
+  ++m_batchStats.reasons[static_cast<size_t>(reason)];
+
+  m_batch.clear();
+  m_batchViews[0] = nullptr;
+  m_batchViews[1] = nullptr;
+
+  // restore what the other GUI draw paths expect
+  m_shaders[m_currentShader].m_vs->BindShader();
+  RestoreInputAssembler();
+}
+
+void CGUIShaderDX::EndCommandList()
+{
+  FlushBatch(BatchFlush::COMMAND_LIST);
+  // a deferred context needs a discard before the first NO_OVERWRITE map of each command list
+  m_batchDiscard = true;
+}
+
+void CGUIShaderDX::GetBatchState(BatchState& state) const
+{
+  ComPtr<ID3D11DeviceContext> pContext = DX::DeviceResources::Get()->GetD3DContext();
+  if (!pContext)
+    return;
+
+  FLOAT blendFactor[4];
+  UINT sampleMask = 0;
+  UINT stencilRef = 0;
+  pContext->OMGetBlendState(state.blend.ReleaseAndGetAddressOf(), blendFactor, &sampleMask);
+  pContext->OMGetDepthStencilState(state.depthStencil.ReleaseAndGetAddressOf(), &stencilRef);
+  pContext->RSGetState(state.rasterizer.ReleaseAndGetAddressOf());
+  pContext->OMGetRenderTargets(1, state.target.ReleaseAndGetAddressOf(),
+                               state.depthView.ReleaseAndGetAddressOf());
+  UINT count = 1;
+  pContext->RSGetScissorRects(&count, &state.scissor);
+  if (count == 0)
+    state.scissor = {};
+  count = 1;
+  pContext->RSGetViewports(&count, &state.viewport);
+  if (count == 0)
+    state.viewport = {};
+}
+
+void CGUIShaderDX::LogBatchStats()
+{
+  const BatchStats& now = m_batchStats;
+  const BatchStats& last = m_batchStatsLogged;
+  std::string reasons;
+  for (size_t i = 0; i < now.reasons.size(); i++)
+  {
+    if (now.reasons[i] != last.reasons[i])
+      reasons += StringUtils::Format(" {}={}", GetBatchFlushName(static_cast<BatchFlush>(i)),
+                                     now.reasons[i] - last.reasons[i]);
+  }
+  const uint64_t textures = now.textures - last.textures;
+  const uint64_t draws = now.draws - last.draws;
+  CLog::Log(LOGDEBUG,
+            "GUI quads ({}): {} frames, {} textures, {} quads, {} draws ({:.2f} textures per draw), "
+            "{} other draws, {} flushes, flush reasons:{}",
+            HasBatchPath() ? "batched" : "per texture", now.frames - last.frames, textures,
+            now.quads - last.quads, draws,
+            draws ? static_cast<double>(textures) / static_cast<double>(draws) : 0.0,
+            now.otherDraws - last.otherDraws, now.flushes - last.flushes,
+            reasons.empty() ? " none" : reasons);
+  m_batchStatsLogged = m_batchStats;
+}
+
+const char* CGUIShaderDX::GetBatchFlushName(BatchFlush reason)
+{
+  static constexpr std::array<const char*, static_cast<size_t>(BatchFlush::COUNT)> names = {
+      "texture", "full", "begin", "views", "depth", "matrix", "clip", "viewport", "draw",
+      "stateblock", "blend", "scissor", "depthculling", "target", "clear", "stereo", "present",
+      "external", "commandlist", "frame"};
+  static_assert(names.back() != nullptr, "every flush reason needs a name");
+  const auto index = static_cast<size_t>(reason);
+  return index < names.size() ? names[index] : "?";
 }
