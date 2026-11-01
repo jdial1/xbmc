@@ -49,6 +49,9 @@ set(CMAKE_SYSTEM_NAME WindowsStore)
 set(CORE_SYSTEM_NAME "windowsstore")
 set(PACKAGE_GUID "281d668b-5739-4abd-b3c2-ed1cda572ed2")
 set(APP_MANIFEST_NAME package.appxmanifest)
+# 4th part of the package version (major.minor.build.revision): lets a test package of the same Kodi
+# version upgrade an installed one in place, e.g. -DAPP_PACKAGE_REVISION=1
+set(APP_PACKAGE_REVISION 0 CACHE STRING "Revision (4th part) of the UWP package version")
 set(DEPS_FOLDER_RELATIVE project/BuildDependencies)
 
 # ToDo: currently host build tools are hardcoded to win32
