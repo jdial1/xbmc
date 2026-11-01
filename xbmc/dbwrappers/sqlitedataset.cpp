@@ -202,9 +202,10 @@ int callback(void* res_ptr, int ncol, char** result, char** cols)
   return 0;
 }
 
-int busy_callback(void*, int /*busyCount*/)
+int busy_callback(void*, int busyCount)
 {
-  KODI::TIME::Sleep(100ms);
+  // retry quickly first: a flat 100 ms per retry stalled every reader for far longer than the lock
+  KODI::TIME::Sleep(busyCount < 20 ? 2ms : 20ms);
   return 1;
 }
 } // unnamed namespace
@@ -418,7 +419,10 @@ int SqliteDatabase::postconnect()
     throw DbErrors("Cannot execute postconnect actions: no active connection...");
 
   static const char* sqlcmd{
-      "PRAGMA cache_size=4096; PRAGMA synchronous='NORMAL'; PRAGMA count_changes='OFF';"};
+      "PRAGMA cache_size=4096; PRAGMA synchronous='NORMAL'; PRAGMA count_changes='OFF';"
+      // temp b-trees (GROUP BY/DISTINCT, statement journals) in memory, reads through a memory map,
+      // and WAL so background writers (thumbs, stream details) no longer block readers
+      "PRAGMA temp_store=MEMORY; PRAGMA mmap_size=268435456; PRAGMA journal_mode=WAL;"};
   if (setErr(sqlite3_exec(getHandle(), sqlcmd, nullptr, nullptr, nullptr), sqlcmd) != SQLITE_OK)
   {
     throw DbErrors("%s", getErrorMsg());

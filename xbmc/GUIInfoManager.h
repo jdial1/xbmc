@@ -14,7 +14,9 @@
 #include "messaging/IMessageTarget.h"
 #include "threads/CriticalSection.h"
 
+#include <deque>
 #include <map>
+#include <optional>
 #include <memory>
 #include <set>
 #include <string>
@@ -264,6 +266,9 @@ private:
   INFOBOOLTYPE m_bools{&CGUIInfoManager::InfoBoolComparator};
   unsigned int m_refreshCounter = 0;
   std::vector<INFO::CSkinVariableString> m_skinVariableStrings;
+  //! GUI thread's own copies of m_skinVariableStrings (made on first use, kept so their label caches
+  //! survive between frames). A deque: nested variables keep references while it grows.
+  mutable std::deque<std::optional<INFO::CSkinVariableString>> m_guiSkinVariableStrings;
 
   mutable CCriticalSection m_critInfo;
 

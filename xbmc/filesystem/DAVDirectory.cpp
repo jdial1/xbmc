@@ -128,8 +128,6 @@ bool CDAVDirectory::GetDirectory(const CURL& url, CFileItemList &items)
 
   std::string fileCharset(dav.GetProperty(XFILE::FileProperty::CONTENT_CHARSET));
   CXBMCTinyXML2 davResponse;
-  davResponse.Parse(strResponse);
-
   if (!davResponse.Parse(strResponse))
   {
     CLog::LogF(LOGERROR, "Unable to process dav directory ({})", url.GetRedacted());

@@ -257,6 +257,13 @@ bool CTexture::LoadIImage(IImage* pImage,
       keep && idealWidth > 0 ? std::min(idealWidth, maxTextureSize) : maxTextureSize;
   const unsigned int limitHeight =
       keep && idealHeight > 0 ? std::min(idealHeight, maxTextureSize) : maxTextureSize;
+  // scale/stretch fill the ideal size: the decoder may still skip detail, as long as neither side
+  // ends up below it (the final size still comes from the limits above)
+  if (!keep && aspectRatio != CAspectRatio::CENTER && idealWidth > 0 && idealHeight > 0)
+  {
+    pImage->m_coverWidth = idealWidth;
+    pImage->m_coverHeight = idealHeight;
+  }
 
   if (!pImage->LoadImageFromMemory(buffer, bufSize, limitWidth, limitHeight))
     return false;

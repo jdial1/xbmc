@@ -310,6 +310,11 @@ void CGUIListItem::FreeIcons()
 
 void CGUIListItem::FreeMemory(bool immediately)
 {
+  // containers call this for every item outside the visible range on every frame; layouts are only
+  // created on the GUI thread (the caller), so an item without them has nothing to free
+  if (!m_layout && !m_focusedLayout)
+    return;
+
   // release the layouts outside of the lock, freeing them needs the graphics context
   std::unique_ptr<CGUIListItemLayout> layout;
   std::unique_ptr<CGUIListItemLayout> focusedLayout;

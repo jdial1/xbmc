@@ -88,4 +88,12 @@ protected:
   unsigned int m_orientation = 0;
   bool m_hasAlpha = false;
 
+public:
+  /*!
+   * Size the image will be shown at when it fills (scale/stretch) rather than fits (keep) an area.
+   * A decoder may pre-reduce the image while decoding as long as both sides stay at least this big.
+   * 0 = no hint.
+   */
+  unsigned int m_coverWidth = 0;
+  unsigned int m_coverHeight = 0;
 };

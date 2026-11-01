@@ -23,6 +23,7 @@
 #include "interfaces/legacy/Monitor.h"
 #include "interfaces/python/AddonPythonInvoker.h"
 #include "interfaces/python/PythonInvoker.h"
+#include "platform/Environment.h"
 #include "settings/AdvancedSettings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/JSONVariantWriter.h"
@@ -67,6 +68,14 @@ XBPython::XBPython()
     CLog::Log(LOGDEBUG, "PYTHONHOME -> {}", pythonRootPath);
     CLog::Log(LOGDEBUG, "PYTHONPATH -> {}", pythonRootPath);
   }
+#endif
+
+#if defined(TARGET_WINDOWS)
+  // The bundled stdlib ships as .py only, in a folder the app can't write to (Program Files, or the
+  // read-only UWP package), so CPython could never cache bytecode and recompiled every module each
+  // interpreter imported. Keep the cache in our writable temp folder instead.
+  CEnvironment::setenv("PYTHONPYCACHEPREFIX",
+                       CSpecialProtocol::TranslatePath("special://temp/pycache"));
 #endif
 
   // *::GlobalInitializeModules() functions call PyImport_ExtendInittab(). PyImport_ExtendInittab() should

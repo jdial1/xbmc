@@ -379,7 +379,10 @@ bool CFFmpegImage::Initialize(unsigned char* buffer, size_t bufSize)
     // The caller scales the image down to fit its own maximum, so everything decoded above
     // that size is read and thrown away. Pre-reduce by the largest power of two that stays
     // at or above it, which costs no detail the caller would have kept.
-    const unsigned int ratio = std::max(m_sourceWidth / m_maxWidth, m_sourceHeight / m_maxHeight);
+    unsigned int ratio = std::max(m_sourceWidth / m_maxWidth, m_sourceHeight / m_maxHeight);
+    // an image that will fill (cover) an area only needs both sides to stay at least that area
+    if (m_coverWidth > 0 && m_coverHeight > 0)
+      ratio = std::max(ratio, std::min(m_sourceWidth / m_coverWidth, m_sourceHeight / m_coverHeight));
     int lowres = 0;
     while (lowres < codec->max_lowres && (1U << (lowres + 1)) <= ratio)
       lowres++;
@@ -600,10 +603,13 @@ bool CFFmpegImage::DecodeFrame(AVFrame* frame, unsigned int width, unsigned int 
   if (!aligned)
     CLog::Log(LOGDEBUG, "Alignment of external buffer is not suitable for ffmpeg intrinsics - please fix your malloc");
 
-  if (aligned && size == pixelsSize && (int)pitch == pictureRGB->linesize[0])
+  // the texture pitch is rounded to 16 pixels, ffmpeg's to 16 bytes: they only matched for widths
+  // that are a multiple of 16. swscale takes any 16-byte-aligned destination stride.
+  if (aligned && pitch >= width * 4 && pitch % 16 == 0 && pixelsSize >= size)
   {
     // We can use the pixels buffer directly
     pictureRGB->data[0] = pixels;
+    pictureRGB->linesize[0] = pitch;
   }
   else
   {

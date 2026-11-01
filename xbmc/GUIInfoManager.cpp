@@ -12375,6 +12375,7 @@ void CGUIInfoManager::Clear()
 {
   std::unique_lock lock(m_critInfo);
   m_skinVariableStrings.clear();
+  m_guiSkinVariableStrings.clear();
 
   /*
     Erase any info bools that are unused. We do this repeatedly as each run
@@ -12765,6 +12766,25 @@ std::string CGUIInfoManager::GetSkinVariableString(int info,
                                                    const CGUIListItem* item /*= nullptr*/) const
 {
   info -= CONDITIONAL_LABEL_START;
+
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+  {
+    // The GUI thread evaluates its own long-lived copy: no deep copy per evaluation, and the label
+    // caches persist (a fresh copy is always dirty). Shared entries are never evaluated, so other
+    // threads can keep copying them under the lock.
+    std::optional<CSkinVariableString>* own = nullptr;
+    {
+      std::unique_lock lock(m_critInfo);
+      if (info < 0 || info >= static_cast<int>(m_skinVariableStrings.size()))
+        return "";
+      if (m_guiSkinVariableStrings.size() < m_skinVariableStrings.size())
+        m_guiSkinVariableStrings.resize(m_skinVariableStrings.size());
+      own = &m_guiSkinVariableStrings[info];
+      if (!*own)
+        *own = m_skinVariableStrings[info];
+    }
+    return (*own)->GetValue(contextWindow, preferImage, item);
+  }
 
   std::optional<CSkinVariableString> variable;
   {

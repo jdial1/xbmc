@@ -279,8 +279,10 @@ bool CDVDFileInfo::CanExtract(const CFileItem& fileItem)
 bool CDVDFileInfo::IsExtractableLocation(const std::string& path)
 {
   // For HTTP/FTP we only allow extraction when on a LAN
+  // translate the protocol so dav(s):// counts as HTTP: otherwise browsing a WebDAV folder opens and
+  // demuxes every unscanned video in it over HTTP
   return !URIUtils::IsRemote(path) || URIUtils::IsOnLAN(path) ||
-         (!URIUtils::IsFTP(path) && !URIUtils::IsHTTP(path));
+         (!URIUtils::IsFTP(path) && !URIUtils::IsHTTP(path, true));
 }
 
 /**

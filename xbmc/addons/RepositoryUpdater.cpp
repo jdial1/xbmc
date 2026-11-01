@@ -345,6 +345,13 @@ void CRepositoryUpdater::ScheduleUpdate(UpdateScheduleType scheduleType)
               nextCheck.GetAsLocalizedDateTime(), duration_cast<seconds>(delta));
   }
 
+  if (scheduleType == UpdateScheduleType::First)
+  {
+    // a due check would otherwise download and parse every repository index while the home screen
+    // and services are still starting
+    delta = std::max<milliseconds>(seconds(90), delta);
+  }
+
   if (scheduleType == UpdateScheduleType::Regular)
   {
     // Enforce minimum hold-off time of 1 hour between regular updates - this is especially

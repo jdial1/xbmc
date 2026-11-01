@@ -1308,17 +1308,21 @@ void CGUIWindowManager::Process(unsigned int currentTime)
       window->DoProcess(currentTime, m_dirtyregions);
   }
 
-  // assign depth values to all active controls
-  if (pWindow)
-    pWindow->AssignDepth();
-
-  auto activeDialogs = m_activeDialogs;
-  stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
-
-  for (const auto& window : activeDialogs)
+  // assign depth values to all active controls; only front-to-back rendering uses them (depth
+  // testing is off otherwise), and this walks every control of every visible window each frame
+  if (CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiFrontToBackRendering)
   {
-    if (window->IsDialogRunning())
-      window->AssignDepth();
+    if (pWindow)
+      pWindow->AssignDepth();
+
+    auto activeDialogs = m_activeDialogs;
+    stable_sort(activeDialogs.begin(), activeDialogs.end(), RenderOrderSortFunction);
+
+    for (const auto& window : activeDialogs)
+    {
+      if (window->IsDialogRunning())
+        window->AssignDepth();
+    }
   }
 
   for (auto& itr : m_dirtyregions)

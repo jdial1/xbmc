@@ -8,6 +8,8 @@
 
 #include "GUILargeTextureManager.h"
 
+#include "windowing/MainLoopWake.h"
+
 #include "ServiceBroker.h"
 #include "TextureCache.h"
 #include "commons/ilog.h"
@@ -412,6 +414,7 @@ void CGUILargeTextureManager::OnJobComplete(unsigned int jobID, bool success, CJ
       loader->m_texture = NULL; // we want to keep the texture, and jobs are auto-deleted.
       m_queued.erase(it);
       m_allocated.push_back(image);
+      KODI::WINDOWING::WakeMainLoop(); // show it now, not after an idle wait
       return;
     }
   }

@@ -98,8 +98,10 @@ CLog::CLog()
   // set the formatting pattern globally
   spdlog::set_pattern(LogPattern);
 
-  // flush on debug logs
-  spdlog::flush_on(spdlog::level::debug);
+  // flush warnings and errors at once, the rest every 2 s (flushing every line serialised all
+  // logging threads on a file write, which adds up with debug logging on)
+  spdlog::flush_on(spdlog::level::warn);
+  spdlog::flush_every(std::chrono::seconds(2));
 
   // set the log level
   SetLogLevel(m_logLevel);
