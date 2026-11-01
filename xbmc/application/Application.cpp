@@ -154,6 +154,7 @@
 #include "win32util.h"
 #endif
 #include "windowing/GraphicContext.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/WinSystem.h"
 #include "windowing/WindowSystemFactory.h"
 #if defined(TARGET_ANDROID)
@@ -1307,6 +1308,8 @@ void CApplication::OnApplicationMessage(ThreadMessage* pMsg)
 void CApplication::LockFrameMoveGuard()
 {
   ++m_WaitingExternalCalls;
+  // the add-on window only opens in FrameMove: wake an idle main loop instead of waiting for its timeout
+  KODI::WINDOWING::WakeMainLoop();
   m_frameMoveGuard.lock();
   ++m_ProcessedExternalCalls;
   CServiceBroker::GetWinSystem()->GetGfxContext().lock();

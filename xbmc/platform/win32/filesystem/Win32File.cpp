@@ -517,7 +517,8 @@ int CWin32File::Stat(const CURL& url, struct __stat64* statData)
   statData->st_rdev = statData->st_dev;
 
 #ifdef TARGET_WINDOWS_STORE
-  const HANDLE hFile = CreateFile2(pathnameW.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+  // attributes only, like desktop: write access is slower, breaks SMB read leases and fails on read-only media
+  const HANDLE hFile = CreateFile2(pathnameW.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
     OPEN_EXISTING, NULL);
 #else
   const HANDLE hFile = CreateFileW(pathnameW.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);

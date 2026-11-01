@@ -23,6 +23,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "threads/SingleLock.h"
+#include "windowing/MainLoopWake.h"
 #include "windowing/WinSystem.h"
 
 CAppInboundProtocol::CAppInboundProtocol(CApplication &app) : m_pApp(app)
@@ -31,10 +32,14 @@ CAppInboundProtocol::CAppInboundProtocol(CApplication &app) : m_pApp(app)
 
 bool CAppInboundProtocol::OnEvent(const XBMC_Event& newEvent)
 {
-  std::unique_lock lock(m_portSection);
-  if (m_closed)
-    return false;
-  m_portEvents.push_back(newEvent);
+  {
+    std::unique_lock lock(m_portSection);
+    if (m_closed)
+      return false;
+    m_portEvents.push_back(newEvent);
+  }
+  // handled in the main loop: don't let it sit out an idle wait
+  KODI::WINDOWING::WakeMainLoop();
   return true;
 }
 

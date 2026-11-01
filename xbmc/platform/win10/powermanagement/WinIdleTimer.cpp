@@ -11,6 +11,8 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPowerHandling.h"
 
+#include <chrono>
+
 #include <winrt/Windows.System.Display.h>
 
 using namespace winrt::Windows::ApplicationModel::Core;
@@ -20,10 +22,16 @@ using namespace winrt::Windows::UI::Core;
 void CWinIdleTimer::StartZero()
 {
   static DisplayRequest displayRequest = nullptr;
+  // This runs for every rendered frame of fullscreen video; the display idle timeout is minutes, so
+  // resetting it every 10 s is plenty instead of queueing a dispatcher work item 60-120 times a second.
+  static std::chrono::steady_clock::time_point lastRequest{};
+  constexpr auto requestInterval = std::chrono::seconds(10);
+  const auto now = std::chrono::steady_clock::now();
   const auto& components = CServiceBroker::GetAppComponents();
   const auto appPower = components.GetComponent<CApplicationPowerHandling>();
-  if (!appPower->IsDPMSActive())
+  if (!appPower->IsDPMSActive() && now - lastRequest >= requestInterval)
   {
+    lastRequest = now;
     if (!displayRequest)
     {
       try
